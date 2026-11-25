@@ -31,7 +31,16 @@
     "no-eval": "error",
     "no-new-func": "error",
     "react/no-danger": "error",
-    "react/react-in-jsx-scope": "off"
+    "react/react-in-jsx-scope": "off",
+    "import/no-unassigned-import": [
+      "error",
+      {
+        "allow": [
+          "**/*.css",
+          "@fontsource-variable/*"
+        ]
+      }
+    ]
   },
   "ignorePatterns": [
     "dist",

@@ -43,5 +43,6 @@
   },
   "overrides": {
     "@xmldom/xmldom": "^0.9.12"
-  }
+  },
+  "license": "MIT"
 }
