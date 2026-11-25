@@ -87,26 +87,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const remember = useCallback(async (name: string, encrypted: ArrayBuffer, handle: FileSystemFileHandle | null, fileLastModified: number | null): Promise<void> => {
     try {
       if (!settingsRef.current.rememberVault) {
-        // Setting off: drop the temporary auto-lock recovery copy once THIS vault is safely persisted,
-        // but never a pending copy belonging to another file.
-        const stored = await loadRememberedVault()
-        if (stored && (!stored.pendingChanges || stored.name === name)) {
-          await forgetVault()
-          setRemembered(null)
-        }
-        return
+        // Setting off: drop THIS vault's temporary auto-lock recovery copy once it is safely persisted.
+        // Records are per vault, so other vaults' recovery copies are untouched.
+        await forgetVault(name)
+      } else {
+        await rememberVault({ name, encrypted, handle, savedAt: Date.now(), fileLastModified })
       }
-      // Never overwrite the auto-lock recovery copy of ANOTHER vault: its unsaved changes would be lost.
-      const stored = await loadRememberedVault()
-      if (stored?.pendingChanges && stored.name !== name) {
-        toast(`Modifications non enregistrées de « ${stored.name} » conservées sur cet appareil : ce coffre n’est pas mémorisé.`)
-        return
-      }
-      await rememberVault({ name, encrypted, handle, savedAt: Date.now(), fileLastModified })
+      setRemembered(await loadRememberedVault())
     } catch {
       // IndexedDB unavailable (private window…): the vault simply is not remembered.
     }
-  }, [toast])
+  }, [])
 
   const openDb = useCallback(
     (db: Kdbx, fileName: string, handle: FileSystemFileHandle | null, encrypted?: ArrayBuffer, pending = false, fileLastModified: number | null = null): void => {
@@ -219,11 +210,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return result
   }, [])
 
-  const forgetDevice = useCallback(async (): Promise<void> => {
+  const forgetDevice = useCallback(async (name?: string): Promise<void> => {
     try {
-      await forgetVault()
+      await forgetVault(name)
     } finally {
-      setRemembered(null)
+      setRemembered(await loadRememberedVault())
     }
   }, [])
 

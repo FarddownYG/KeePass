@@ -31,7 +31,8 @@ export interface SessionApi extends SessionState {
   /** Resolves true when the file was written (or downloaded). */
   save: (forcePicker?: boolean) => Promise<boolean>
   lock: () => void
-  forgetDevice: () => Promise<void>
+  /** Forgets one remembered vault (by name), or all of them. */
+  forgetDevice: (name?: string) => Promise<void>
 }
 
 export const SessionContext = createContext<SessionApi | null>(null)

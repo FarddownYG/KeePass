@@ -5,7 +5,8 @@
 
 const DB_NAME = 'keyhold'
 const STORE = 'vaults'
-const RECENT_KEY = 'recent'
+/** One record per vault (keyed by file name), so a recovery copy never overwrites another vault's. */
+const keyOf = (name: string): string => `vault:${name}`
 
 export interface StoredVault {
   name: string
@@ -51,18 +52,22 @@ function looksEncrypted(bytes: ArrayBuffer): boolean {
 export async function rememberVault(v: StoredVault): Promise<void> {
   // Defensive guard: refuse anything that is not a KDBX container.
   if (!looksEncrypted(v.encrypted)) throw new Error('refusing to store non-KDBX data')
-  await tx('readwrite', (s) => s.put(v, RECENT_KEY))
+  await tx('readwrite', (s) => s.put(v, keyOf(v.name)))
 }
 
 export async function loadRememberedVault(): Promise<StoredVault | null> {
   try {
-    const v = await tx<StoredVault | undefined>('readonly', (s) => s.get(RECENT_KEY) as IDBRequest<StoredVault | undefined>)
-    return v ?? null
+    const all = await tx<StoredVault[]>('readonly', (s) => s.getAll() as IDBRequest<StoredVault[]>)
+    if (all.length === 0) return null
+    // Unsaved recovery copies first (most recent), then the most recently used vault.
+    const sorted = [...all].sort((a, b) => Number(b.pendingChanges === true) - Number(a.pendingChanges === true) || b.savedAt - a.savedAt)
+    return sorted[0]
   } catch {
     return null
   }
 }
 
-export async function forgetVault(): Promise<void> {
-  await tx('readwrite', (s) => s.delete(RECENT_KEY))
+/** Forgets one vault (by name), or every vault stored on this device when no name is given. */
+export async function forgetVault(name?: string): Promise<void> {
+  await tx('readwrite', (s) => (name === undefined ? s.clear() : s.delete(keyOf(name))))
 }

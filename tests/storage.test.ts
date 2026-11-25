@@ -1,0 +1,25 @@
+import 'fake-indexeddb/auto'
+import { describe, expect, it } from 'vitest'
+import { forgetVault, loadRememberedVault, rememberVault } from '../src/core/storage'
+
+const kdbx = (n: number) => new Uint8Array([0x03, 0xd9, 0xa2, 0x9a, n]).buffer
+
+describe('IndexedDB storage', () => {
+  it('refuses anything that is not a KDBX container', async () => {
+    await expect(rememberVault({ name: 'x', encrypted: new TextEncoder().encode('plain secret').buffer, handle: null, savedAt: 1 })).rejects.toThrow()
+  })
+
+  it("a recovery copy of vault B never overwrites vault A's, and pending copies are offered first", async () => {
+    await forgetVault()
+    await rememberVault({ name: 'A.kdbx', encrypted: kdbx(1), handle: null, savedAt: 1, pendingChanges: true })
+    await rememberVault({ name: 'B.kdbx', encrypted: kdbx(2), handle: null, savedAt: 3 })
+    expect((await loadRememberedVault())?.name).toBe('A.kdbx')
+    await rememberVault({ name: 'B.kdbx', encrypted: kdbx(3), handle: null, savedAt: 4, pendingChanges: true })
+    await rememberVault({ name: 'A.kdbx', encrypted: kdbx(4), handle: null, savedAt: 5 }) // A saved
+    expect((await loadRememberedVault())?.name).toBe('B.kdbx')
+    await forgetVault('B.kdbx')
+    expect((await loadRememberedVault())?.name).toBe('A.kdbx')
+    await forgetVault()
+    expect(await loadRememberedVault()).toBeNull()
+  })
+})

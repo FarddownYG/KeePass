@@ -73,6 +73,7 @@ Aucun script ni style inline (vérifié à chaque build par `scripts/check-dist.
 
 - **Mémoire** : JavaScript ne permet pas d'effacer de façon garantie les chaînes en mémoire. kdbxweb garde les champs protégés chiffrés en mémoire (XOR + sel) et ne les déchiffre qu'à l'affichage/copie, mais des copies peuvent subsister jusqu'au ramasse-miettes.
 - **Presse-papiers** : l'effacement après 30 s échoue si la page n'a plus le focus à ce moment ; il est retenté au retour du focus. Les gestionnaires d'historique du presse-papiers (OS) peuvent conserver une copie.
+- **Copies mémorisées** : une copie chiffrée par coffre, identifiée par son nom de fichier ; deux coffres de même nom partagent la même copie sur l'appareil. En cas de conflit (fichier modifié ailleurs ou date inconnue), l'enregistrement direct est refusé — utilisez « Enregistrer sous… ».
 - **Verrouillage sur `pagehide`** (fermeture d'onglet) : la copie de récupération chiffrée est asynchrone et peut ne pas aboutir ; le navigateur demande toutefois confirmation avant de fermer un onglet avec des modifications non enregistrées.
 - **Mot de passe maître** : les champs sont en `autocomplete="off"`, mais certains navigateurs peuvent quand même proposer de l'enregistrer ; refusez.
 - **Mise à jour silencieuse** : la PWA se met à jour automatiquement ; un déploiement compromis remplacerait le code (limite inhérente à toute appli web hébergée).

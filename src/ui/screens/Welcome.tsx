@@ -52,7 +52,7 @@ export function Welcome() {
 
   const forget = async (): Promise<void> => {
     try {
-      await forgetDevice()
+      await forgetDevice(remembered?.name)
     } finally {
       setPicked(null)
     }
