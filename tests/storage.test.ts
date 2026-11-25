@@ -1,12 +1,12 @@
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { forgetNonPendingVaults, forgetNormalCopy, forgetVault, loadRememberedVault, rememberVault, saveRecoveryCopy } from '../src/core/storage'
+import { clearAllVaults, forgetNonPendingVaults, forgetNormalCopy, forgetVault, loadRememberedVault, rememberVault, saveRecoveryCopy } from '../src/core/storage'
 
 const kdbx = (n: number) => new Uint8Array([0x03, 0xd9, 0xa2, 0x9a, n]).buffer
 const base = (name: string, savedAt: number, n = savedAt) => ({ name, encrypted: kdbx(n), handle: null, savedAt })
 
 beforeEach(async () => {
-  await forgetVault()
+  await clearAllVaults()
 })
 
 describe('IndexedDB storage', () => {
@@ -61,7 +61,7 @@ describe('IndexedDB storage', () => {
     const v = await loadRememberedVault()
     expect(v?.name).toBe('Old.kdbx')
     expect(v?.key?.startsWith('pending:')).toBe(true)
-    await forgetVault(v?.key)
+    await forgetVault(v?.key ?? '')
     expect(await loadRememberedVault()).toBeNull()
   })
 })

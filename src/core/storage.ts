@@ -65,6 +65,7 @@ async function eachRecord(mode: IDBTransactionMode, visit: (key: string, value: 
       }
       t.oncomplete = () => resolve()
       t.onerror = () => reject(t.error ?? new Error('IndexedDB error'))
+      t.onabort = () => reject(t.error ?? new Error('IndexedDB transaction aborted'))
     })
   } finally {
     db.close()
@@ -103,8 +104,21 @@ async function migrateLegacy(): Promise<void> {
   const legacy = await tx<StoredVault | undefined>('readonly', (s) => s.get(LEGACY_KEY) as IDBRequest<StoredVault | undefined>)
   if (!legacy) return
   const target = legacy.pendingChanges === true ? newPendingKey() : normalKey(legacy.name)
-  await tx('readwrite', (s) => s.put(legacy, target))
-  await tx('readwrite', (s) => s.delete(LEGACY_KEY))
+  // Move in ONE transaction: no duplicate copy if the deletion failed.
+  const db = await openDb()
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const t = db.transaction(STORE, 'readwrite')
+      const store = t.objectStore(STORE)
+      store.put(legacy, target)
+      store.delete(LEGACY_KEY)
+      t.oncomplete = () => resolve()
+      t.onerror = () => reject(t.error ?? new Error('IndexedDB error'))
+      t.onabort = () => reject(t.error ?? new Error('IndexedDB transaction aborted'))
+    })
+  } finally {
+    db.close()
+  }
 }
 
 /** Unsaved recovery copies first (most recent), then the most recently used vault. */
@@ -121,9 +135,14 @@ export async function loadRememberedVault(): Promise<StoredVault | null> {
   }
 }
 
-/** Forgets one record (by storage key), or EVERYTHING stored on this device when no key is given. */
-export async function forgetVault(key?: string): Promise<void> {
-  await tx('readwrite', (s) => (key === undefined ? s.clear() : s.delete(key)))
+/** Forgets one record (by storage key). */
+export async function forgetVault(key: string): Promise<void> {
+  await tx('readwrite', (s) => s.delete(key))
+}
+
+/** Erases EVERYTHING this app stored on the device (explicit user action only). */
+export async function clearAllVaults(): Promise<void> {
+  await tx('readwrite', (s) => s.clear())
 }
 
 /** Forgets the normal copy of a vault (its recovery copies are untouched). */

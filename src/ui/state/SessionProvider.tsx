@@ -4,7 +4,7 @@ import { clearClipboardNow } from '../../core/clipboard'
 import { saveVaultFile } from '../../core/files'
 import { clearHibpCache } from '../../core/hibp'
 import { loadSettings, saveSettings, type Settings } from '../../core/settings'
-import { forgetNonPendingVaults, forgetNormalCopy, forgetVault, loadRememberedVault, rememberVault, saveRecoveryCopy, type StoredVault } from '../../core/storage'
+import { clearAllVaults, forgetNonPendingVaults, forgetNormalCopy, forgetVault, loadRememberedVault, rememberVault, saveRecoveryCopy, type StoredVault } from '../../core/storage'
 import { saveVault, type Kdbx } from '../../core/vault'
 import { SessionContext, type SessionApi, type SessionState } from './session-context'
 import { useToast } from './toast-context'
@@ -197,7 +197,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           s.db === db ? { ...s, handle: newHandle, fileName: newName, fileLastModified: newLastModified, dirty: s.rev !== revAtStart } : s,
         )
         lastPersistedRef.current = { id: vaultId(db), rev: revAtStart, lastModified: newLastModified }
-        await remember('save', newName, bytes, newHandle, newLastModified, recoveryKey)
+        // A download may be blocked or discarded by the browser: keep the recovery copy in that case.
+        await remember('save', newName, bytes, newHandle, newLastModified, res.method === 'handle' ? recoveryKey : null)
         toast(res.method === 'download' ? 'Fichier téléchargé' : 'Enregistré')
         ok = true
         return true
@@ -243,7 +244,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const forgetDevice = useCallback(async (key?: string, keepPending = false): Promise<void> => {
     try {
       if (keepPending) await forgetNonPendingVaults()
-      else await forgetVault(key)
+      else if (key !== undefined) await forgetVault(key)
+      else await clearAllVaults()
     } finally {
       setRemembered(await loadRememberedVault())
     }
