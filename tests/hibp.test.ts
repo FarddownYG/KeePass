@@ -101,3 +101,18 @@ describe('HIBP cache', () => {
     expect(ok).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('HIBP abort', () => {
+  it("aborting one caller does not fail another caller sharing the request", async () => {
+    let release: (r: Response) => void = () => undefined
+    const fetchFn = vi.fn<FetchLike>(() => new Promise<Response>((r) => { release = r }))
+    const ctrl = new AbortController()
+    const a = pwnedCount('shared-secret', { fetchFn, signal: ctrl.signal })
+    const b = pwnedCount('shared-secret', { fetchFn })
+    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1))
+    ctrl.abort()
+    await expect(a).rejects.toThrow()
+    release(new Response('', { status: 200 }))
+    await expect(b).resolves.toBe(0)
+  })
+})

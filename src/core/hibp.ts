@@ -34,7 +34,27 @@ export function parseRangeResponse(body: string): Map<string, number> {
   return out
 }
 
-function fetchRange(prefix: string, fetchFn: FetchLike, signal?: AbortSignal): Promise<Map<string, number>> {
+/** Lets one caller stop waiting without cancelling a request shared with other callers. */
+function withAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return p
+  if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'))
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new DOMException('Aborted', 'AbortError'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    p.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(v)
+      },
+      (e: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(e instanceof Error ? e : new Error('HIBP request failed'))
+      },
+    )
+  })
+}
+
+function fetchRange(prefix: string, fetchFn: FetchLike): Promise<Map<string, number>> {
   const cached = cache.get(prefix)
   if (cached) return cached
   const request = (async () => {
@@ -45,7 +65,6 @@ function fetchRange(prefix: string, fetchFn: FetchLike, signal?: AbortSignal): P
       referrerPolicy: 'no-referrer',
       cache: 'no-store',
       mode: 'cors',
-      signal,
     })
     if (!res.ok) throw new Error(`HIBP: HTTP ${res.status}`)
     return parseRangeResponse(await res.text())
@@ -69,7 +88,7 @@ export async function pwnedCount(
   const prefix = hash.slice(0, 5)
   const suffix = hash.slice(5)
   const fetchFn: FetchLike = opts.fetchFn ?? ((input, init) => fetch(input, init))
-  const range = await fetchRange(prefix, fetchFn, opts.signal)
+  const range = await withAbort(fetchRange(prefix, fetchFn), opts.signal)
   return range.get(suffix) ?? 0
 }
 

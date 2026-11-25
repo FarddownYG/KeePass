@@ -92,10 +92,15 @@ async function lastModifiedOf(handle: FileSystemFileHandle): Promise<number | nu
   }
 }
 
-async function writeHandle(handle: FileSystemFileHandle, bytes: ArrayBuffer): Promise<boolean> {
+async function ensureWritePermission(handle: FileSystemFileHandle): Promise<boolean> {
   if (handle.queryPermission && (await handle.queryPermission({ mode: 'readwrite' })) !== 'granted') {
     if (!handle.requestPermission || (await handle.requestPermission({ mode: 'readwrite' })) !== 'granted') return false
   }
+  return true
+}
+
+async function writeHandle(handle: FileSystemFileHandle, bytes: ArrayBuffer): Promise<boolean> {
+  if (!(await ensureWritePermission(handle))) return false
   const writable = await handle.createWritable()
   await writable.write(bytes)
   await writable.close()
@@ -115,9 +120,11 @@ export async function saveVaultFile(
 ): Promise<SaveResult> {
   if (opts.handle && !opts.forcePicker) {
     const expected = opts.expectedLastModified
-    if (expected != null) {
+    // Permission first, so the file can be read for the conflict check.
+    if (expected != null && (await ensureWritePermission(opts.handle))) {
       const current = await lastModifiedOf(opts.handle)
-      if (current !== null && current !== expected) return { method: 'conflict' }
+      // Fail closed: unreadable or changed file → never overwrite.
+      if (current === null || current !== expected) return { method: 'conflict' }
     }
     if (await writeHandle(opts.handle, bytes)) {
       return { method: 'handle', handle: opts.handle, lastModified: await lastModifiedOf(opts.handle) }

@@ -102,7 +102,7 @@ Gates (revue de sécurité indépendante effectuée ; tous les findings critique
 - `npm run lint` : oxlint (`no-explicit-any`, `ban-ts-comment`, `no-console`, …) + `scripts/check-forbidden.mjs` (rejette `any`, `@ts-ignore`, `eslint-disable`, `.skip`, `catch {}` vide, `innerHTML`, `console.*`).
 - `npm test` : aller-retour KDBX, mauvais mot de passe / fichier corrompu, fixtures KeePassXC, HIBP (seul le préfixe de 5 caractères part — `fetch` mocké), isolation réseau (statique + runtime), générateur.
 - `npm run build` : typecheck + build + `scripts/check-dist.mjs` (HTML sans inline).
-- `npm run e2e` : Playwright sur `dist/` servi avec les en-têtes exacts de `vercel.json` — aucune violation CSP, aucune requête HIBP pendant la frappe, préfixe de 5 caractères + `Add-Padding` seulement, aucune requête vers une autre origine, aucun secret dans localStorage/sessionStorage/titre/URL.
+- `npm run e2e` : Playwright sur `dist/` servi avec les en-têtes exacts de `vercel.json` — aucune violation CSP, aucune requête HIBP pendant la frappe, préfixe de 5 caractères + `Add-Padding` seulement, aucune requête vers une autre origine, aucun secret dans localStorage/sessionStorage/titre/URL, IndexedDB ne contient que des conteneurs KDBX chiffrés.
 
 ## Déploiement (Vercel)
 

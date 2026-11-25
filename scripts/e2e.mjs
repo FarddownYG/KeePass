@@ -29,7 +29,12 @@ const fail = (msg) => {
 }
 const browser = await chromium.launch()
 try {
-  const page = await (await browser.newContext()).newPage()
+  const page = await (await browser.newContext({ acceptDownloads: true })).newPage()
+  // Headless has no file picker UI: exercise the download fallback (Firefox/Safari path).
+  await page.addInitScript(() => {
+    delete window.showSaveFilePicker
+    delete window.showOpenFilePicker
+  })
   const external = []
   const hibp = []
   const cspErrors = []
@@ -65,12 +70,35 @@ try {
   await page.getByLabel('Mot de passe', { exact: true }).fill('entry-secret-XYZ')
   await page.locator('form button[type=submit]').click()
   await page.getByText('E2E entry').first().waitFor()
+  // Save (download fallback in headless) so the encrypted copy lands in IndexedDB.
+  const download = page.waitForEvent('download', { timeout: 20000 })
+  await page.keyboard.press('Control+s')
+  await download
+  await page.waitForTimeout(500)
 
   const storage = await page.evaluate(async () => {
     const ls = JSON.stringify(localStorage) + JSON.stringify(sessionStorage)
     const dbs = await indexedDB.databases()
-    return { ls, dbs: dbs.map((d) => d.name), title: document.title, href: location.href }
+    // Every value stored in IndexedDB: must be KDBX-encrypted bytes, never plaintext.
+    const idb = await new Promise((resolve) => {
+      const req = indexedDB.open('keyhold')
+      req.onsuccess = () => {
+        const db = req.result
+        if (!db.objectStoreNames.contains('vaults')) return resolve([])
+        const all = db.transaction('vaults').objectStore('vaults').getAll()
+        all.onsuccess = () => resolve(all.result.map((v) => {
+          const u8 = new Uint8Array(v.encrypted)
+          return { sig: Array.from(u8.slice(0, 4), (x) => x.toString(16).padStart(2, '0')).join(''), text: new TextDecoder('latin1').decode(u8) + JSON.stringify({ ...v, encrypted: null, handle: null }) }
+        }))
+      }
+      req.onerror = () => resolve([])
+    })
+    return { ls, idb, dbs: dbs.map((d) => d.name), title: document.title, href: location.href }
   })
+  for (const rec of storage.idb) {
+    if (rec.sig !== '03d9a29a') fail(`IndexedDB record is not a KDBX container (${rec.sig})`)
+    for (const secret of [master, 'entry-secret-XYZ', 'E2E entry']) if (rec.text.includes(secret)) fail('plaintext in IndexedDB')
+  }
   for (const secret of [master, 'entry-secret-XYZ']) {
     if (storage.ls.includes(secret) || storage.title.includes(secret) || storage.href.includes(secret)) fail(`secret leaked to storage/title/url`)
   }
@@ -80,9 +108,10 @@ try {
     if (r.headers['add-padding'] !== 'true') fail('missing Add-Padding header')
     if (JSON.stringify(r).includes(master) || JSON.stringify(r).includes('entry-secret-XYZ')) fail('secret in HIBP request')
   }
+  if (storage.idb.length !== 1) fail(`expected 1 encrypted IndexedDB record, got ${storage.idb.length}`)
   if (external.length) fail(`requests to other origins: ${external.join(', ')}`)
   if (cspErrors.length) fail(`CSP/page errors: ${cspErrors.join(' | ')}`)
-  if (!process.exitCode) process.stdout.write(`e2e: OK (HIBP requests: ${hibp.length}, external: 0, CSP violations: 0)\n`)
+  if (!process.exitCode) process.stdout.write(`e2e: OK (HIBP requests: ${hibp.length}, IndexedDB records: ${storage.idb.length} encrypted, external: 0, CSP violations: 0)\n`)
 } finally {
   await browser.close()
   server.close()

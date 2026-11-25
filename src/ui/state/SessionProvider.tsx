@@ -11,6 +11,17 @@ import { useToast } from './toast-context'
 
 const EMPTY: SessionState = { db: null, fileName: '', handle: null, fileLastModified: null, dirty: false, rev: 0 }
 
+const vaultIds = new WeakMap<Kdbx, number>()
+let nextVaultId = 1
+function vaultId(db: Kdbx): number {
+  let id = vaultIds.get(db)
+  if (id === undefined) {
+    id = nextVaultId++
+    vaultIds.set(db, id)
+  }
+  return id
+}
+
 function applyTheme(pref: Settings['theme']): void {
   const dark = pref === 'dark' || (pref === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
   document.documentElement.dataset.theme = dark ? 'dark' : 'light'
@@ -25,6 +36,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [recovering, setRecovering] = useState(false)
 
   const stateRef = useRef(state)
+  const inFlightRef = useRef<Promise<boolean> | null>(null)
+  /** Identity token only (no strong reference to the decrypted vault after lock). */
+  const lastPersistedRef = useRef<{ id: number; rev: number; lastModified: number | null } | null>(null)
   const settingsRef = useRef(settings)
   useEffect(() => {
     stateRef.current = state
@@ -73,9 +87,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const remember = useCallback(async (name: string, encrypted: ArrayBuffer, handle: FileSystemFileHandle | null, fileLastModified: number | null): Promise<void> => {
     try {
       if (!settingsRef.current.rememberVault) {
-        // Setting off: drop any temporary auto-lock recovery copy once the vault is safely persisted.
-        await forgetVault()
-        setRemembered(null)
+        // Setting off: drop the temporary auto-lock recovery copy once THIS vault is safely persisted,
+        // but never a pending copy belonging to another file.
+        const stored = await loadRememberedVault()
+        if (stored && (!stored.pendingChanges || stored.name === name)) {
+          await forgetVault()
+          setRemembered(null)
+        }
         return
       }
       await rememberVault({ name, encrypted, handle, savedAt: Date.now(), fileLastModified })
@@ -101,10 +119,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const s = stateRef.current
     lock()
     if (!s.db || !s.dirty) return
-    const name = s.fileName || `${s.db.meta.name || 'coffre'}.kdbx`
+    const db = s.db
+    const name = s.fileName || `${db.meta.name || 'coffre'}.kdbx`
     setRecovering(true)
-    void saveVault(s.db)
-      .then((encrypted) => rememberVault({ name, encrypted, handle: s.handle, savedAt: Date.now(), pendingChanges: true, fileLastModified: s.fileLastModified }))
+    const run = async (): Promise<void> => {
+      // A save may be in flight (Ctrl+S then tab switch): wait for it, then skip the recovery copy if
+      // it persisted this revision; otherwise use the file's post-write mtime to avoid a false conflict.
+      await inFlightRef.current
+      const last = lastPersistedRef.current
+      const sameVault = last !== null && last.id === vaultId(db)
+      if (sameVault && last.rev >= s.rev) return
+      const fileLastModified = sameVault ? last.lastModified : s.fileLastModified
+      const encrypted = await saveVault(db)
+      await rememberVault({ name, encrypted, handle: s.handle, savedAt: Date.now(), pendingChanges: true, fileLastModified })
+    }
+    void run()
       .then(refreshRemembered)
       .catch(() => toast('Verrouillé : les modifications non enregistrées n’ont pas pu être conservées', 'error'))
       .finally(() => setRecovering(false))
@@ -114,6 +143,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     async (db: Kdbx, handle: FileSystemFileHandle | null, fileName: string, forcePicker: boolean, startRev?: number): Promise<boolean> => {
       setSaving(true)
       const revAtStart = startRev ?? stateRef.current.rev
+      let done: (v: boolean) => void = () => undefined
+      inFlightRef.current = new Promise<boolean>((r) => {
+        done = r
+      })
+      let ok = false
       try {
         const bytes = await saveVault(db)
         const expectedLastModified = stateRef.current.db === db ? stateRef.current.fileLastModified : null
@@ -129,14 +163,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setState((s) =>
           s.db === db ? { ...s, handle: newHandle, fileName: newName, fileLastModified: newLastModified, dirty: s.rev !== revAtStart } : s,
         )
+        lastPersistedRef.current = { id: vaultId(db), rev: revAtStart, lastModified: newLastModified }
         await remember(newName, bytes, newHandle, newLastModified)
         toast(res.method === 'download' ? 'Fichier téléchargé' : 'Enregistré')
+        ok = true
         return true
       } catch (err) {
         toast(err instanceof Error ? err.message : "Échec de l'enregistrement", 'error')
         return false
       } finally {
         setSaving(false)
+        done(ok)
+        inFlightRef.current = null
       }
     },
     [remember, toast],
