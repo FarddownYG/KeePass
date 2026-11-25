@@ -90,6 +90,14 @@ export async function loadRememberedVault(): Promise<StoredVault | null> {
   }
 }
 
+/** Forgets every normal copy but keeps unsaved recovery copies (used when "remember" is switched off). */
+export async function forgetNonPendingVaults(): Promise<void> {
+  const all = await tx<StoredVault[]>('readonly', (s) => s.getAll() as IDBRequest<StoredVault[]>)
+  for (const v of all) {
+    if (v.pendingChanges !== true) await forgetVault(v.name)
+  }
+}
+
 /** Forgets one vault (by name), or every vault stored on this device when no name is given. */
 export async function forgetVault(name?: string): Promise<void> {
   await tx('readwrite', (s) => (name === undefined ? s.clear() : s.delete(keyOf(name))))

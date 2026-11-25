@@ -59,7 +59,8 @@ export function SettingsScreen({ db, onBack }: { db: Kdbx; onBack: () => void })
 
   const setRemember = (value: boolean): void => {
     updateSettings({ rememberVault: value })
-    if (!value) void forgetDevice().then(() => toast('Copie chiffrée supprimée de cet appareil'))
+    // Unsaved recovery copies are kept: only a save or an explicit "Oublier" removes them.
+    if (!value) void forgetDevice(undefined, true).then(() => toast('Copies chiffrées supprimées (copies de récupération non enregistrées conservées)'))
   }
 
   const forget = (): void => {

@@ -42,3 +42,16 @@ describe('legacy single-record layout', () => {
     expect(await loadRememberedVault()).toBeNull()
   })
 })
+
+describe('forgetNonPendingVaults', () => {
+  it('keeps unsaved recovery copies', async () => {
+    const { forgetNonPendingVaults } = await import('../src/core/storage')
+    await forgetVault()
+    await rememberVault({ name: 'P.kdbx', encrypted: kdbx(1), handle: null, savedAt: 1, pendingChanges: true })
+    await rememberVault({ name: 'N.kdbx', encrypted: kdbx(2), handle: null, savedAt: 2 })
+    await forgetNonPendingVaults()
+    expect((await loadRememberedVault())?.name).toBe('P.kdbx')
+    await forgetVault('P.kdbx')
+    expect(await loadRememberedVault()).toBeNull()
+  })
+})

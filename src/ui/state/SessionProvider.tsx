@@ -4,7 +4,7 @@ import { clearClipboardNow } from '../../core/clipboard'
 import { saveVaultFile } from '../../core/files'
 import { clearHibpCache } from '../../core/hibp'
 import { loadSettings, saveSettings, type Settings } from '../../core/settings'
-import { forgetVault, getRememberedVault, loadRememberedVault, rememberVault, type StoredVault } from '../../core/storage'
+import { forgetNonPendingVaults, forgetVault, getRememberedVault, loadRememberedVault, rememberVault, type StoredVault } from '../../core/storage'
 import { saveVault, type Kdbx } from '../../core/vault'
 import { SessionContext, type SessionApi, type SessionState } from './session-context'
 import { useToast } from './toast-context'
@@ -37,6 +37,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const stateRef = useRef(state)
   const inFlightRef = useRef<Promise<boolean> | null>(null)
+  /** Name of the pending recovery copy this session was unlocked from (only it may be cleared by a save). */
+  const recoveredFromRef = useRef<string | null>(null)
   /** Identity token only (no strong reference to the decrypted vault after lock). */
   const lastPersistedRef = useRef<{ id: number; rev: number; lastModified: number | null } | null>(null)
   const settingsRef = useRef(settings)
@@ -99,14 +101,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       previousName?: string,
     ): Promise<void> => {
       try {
-        if (mode === 'open') {
-          const existing = await getRememberedVault(name)
-          if (existing?.pendingChanges) return
+        // A pending recovery copy may only be replaced/cleared by a save of the session that was
+        // opened FROM it. Any other vault (or a same-named file opened from disk) must leave it alone.
+        const recovered = recoveredFromRef.current
+        const existing = await getRememberedVault(name)
+        if (existing?.pendingChanges && !(mode === 'save' && recovered === name)) {
+          setRemembered(await loadRememberedVault())
+          return
         }
-        if (mode === 'save' && previousName && previousName !== name) {
-          const old = await getRememberedVault(previousName)
-          if (old?.pendingChanges) await forgetVault(previousName)
+        if (mode === 'save' && previousName && previousName !== name && recovered === previousName) {
+          await forgetVault(previousName)
         }
+        if (mode === 'save') recoveredFromRef.current = null
         if (settingsRef.current.rememberVault) {
           await rememberVault({ name, encrypted, handle, savedAt: Date.now(), fileLastModified })
           // The setting may have been switched off meanwhile: honour it.
@@ -126,6 +132,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const openDb = useCallback(
     (db: Kdbx, fileName: string, handle: FileSystemFileHandle | null, encrypted?: ArrayBuffer, pending = false, fileLastModified: number | null = null): void => {
       setState({ db, fileName, handle, fileLastModified, dirty: pending, rev: pending ? 1 : 0 })
+      recoveredFromRef.current = pending ? fileName : null
       if (pending) toast('Modifications non enregistrées récupérées — pensez à enregistrer')
       if (encrypted) void remember('open', fileName, encrypted, handle, fileLastModified)
     },
@@ -239,9 +246,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return result
   }, [])
 
-  const forgetDevice = useCallback(async (name?: string): Promise<void> => {
+  const forgetDevice = useCallback(async (name?: string, keepPending = false): Promise<void> => {
     try {
-      await forgetVault(name)
+      if (keepPending) await forgetNonPendingVaults()
+      else await forgetVault(name)
     } finally {
       setRemembered(await loadRememberedVault())
     }
