@@ -18,7 +18,7 @@ export interface KdfSettings {
 }
 
 /** Argon2id defaults for new vaults (≈ KeePassXC order of magnitude, tuned for browsers). */
-export const DEFAULT_KDF: KdfSettings = { memoryKiB: 64 * 1024, iterations: 10, parallelism: 2 }
+export const DEFAULT_KDF: KdfSettings = { memoryKiB: 64 * 1024, iterations: 3, parallelism: 2 }
 
 export interface CredentialsInput {
   password: string

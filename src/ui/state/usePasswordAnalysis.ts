@@ -14,8 +14,8 @@ export type BreachState =
 export interface PasswordAnalysis {
   strength: Strength | null
   breach: BreachState
-  /** Runs the HIBP lookup for the CURRENT complete password (call on blur or on explicit request). */
-  checkBreach: () => void
+  /** Runs the HIBP lookup for a COMPLETE password: the current one (on blur) or `value` (e.g. just generated). */
+  checkBreach: (value?: string) => void
 }
 
 const STRENGTH_DELAY_MS = 200
@@ -53,13 +53,13 @@ export function usePasswordAnalysis(password: string, userInputs: string[] = [],
 
   useEffect(() => () => ctrlRef.current?.abort(), [])
 
-  const checkBreach = useCallback((): void => {
-    if (!enabled || !password) return
-    if (breachRes?.for === password && breachRes.state.status !== 'error') return
+  const checkBreach = useCallback((value?: string): void => {
+    const target = typeof value === 'string' ? value : password
+    if (!enabled || !target) return
+    if (breachRes?.for === target && breachRes.state.status !== 'error') return
     ctrlRef.current?.abort()
     const ctrl = new AbortController()
     ctrlRef.current = ctrl
-    const target = password
     setBreachRes({ for: target, state: { status: 'loading' } })
     pwnedCount(target, { signal: ctrl.signal })
       .then((count) => {

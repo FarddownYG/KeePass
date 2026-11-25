@@ -161,6 +161,8 @@ export function EntryForm({ db, entry, defaultGroupId, onClose }: EntryFormProps
                 <GeneratorPanel
                   onUse={(v) => {
                     setPassword(v)
+                    // Complete value inserted: check it right away (never a partial password).
+                    analysis.checkBreach(v)
                     setGenOpen(false)
                   }}
                 />

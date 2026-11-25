@@ -4,6 +4,8 @@
 import { createServer } from 'node:http'
 import { readFileSync, existsSync } from 'node:fs'
 import { extname, join, normalize } from 'node:path'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
@@ -63,7 +65,10 @@ try {
   await page.getByLabel('Confirmer le mot de passe').fill(master)
   await page.waitForTimeout(800)
   if (hibp.length !== 1) fail(`expected exactly 1 HIBP request after blur, got ${hibp.length}`)
+  // "Save now" is checked by default on creation: wait for that first download (empty vault).
+  const createDownload = page.waitForEvent('download', { timeout: 30000 })
   await page.locator('form button[type=submit]').click()
+  await createDownload
   await page.getByRole('button', { name: /Nouvelle entrée|Ajouter/ }).first().waitFor({ timeout: 15000 })
   await page.getByRole('button', { name: /Nouvelle entrée|Ajouter/ }).first().click()
   await page.getByLabel('Titre').fill('E2E entry')
@@ -73,7 +78,9 @@ try {
   // Save (download fallback in headless) so the encrypted copy lands in IndexedDB.
   const download = page.waitForEvent('download', { timeout: 20000 })
   await page.keyboard.press('Control+s')
-  await download
+  const tmp = mkdtempSync(join(tmpdir(), 'keyhold-e2e-'))
+  const savedPath = join(tmp, 'saved.kdbx')
+  await (await download).saveAs(savedPath)
   await page.waitForTimeout(500)
 
   const storage = await page.evaluate(async () => {
@@ -108,10 +115,80 @@ try {
     if (r.headers['add-padding'] !== 'true') fail('missing Add-Padding header')
     if (JSON.stringify(r).includes(master) || JSON.stringify(r).includes('entry-secret-XYZ')) fail('secret in HIBP request')
   }
+  // ---- Phase 2: real round-trip through the downloaded file, in a FRESH browser profile ----
+  {
+    const ctx2 = await browser.newContext()
+    const p2 = await ctx2.newPage()
+    await p2.addInitScript(() => {
+      delete window.showSaveFilePicker
+      delete window.showOpenFilePicker
+    })
+    await p2.route('**/*', (route) => (route.request().url().startsWith('http://localhost:4175/') ? route.continue() : route.abort()))
+    await p2.goto('http://localhost:4175/')
+    const chooser = p2.waitForEvent('filechooser')
+    await p2.getByRole('button', { name: /Ouvrir un fichier/ }).click()
+    await (await chooser).setFiles(savedPath)
+    await p2.getByLabel('Mot de passe maître').fill('wrong-password')
+    await p2.locator('form button[type=submit]').click()
+    await p2.getByText(/incorrect/i).first().waitFor({ timeout: 20000 }).catch(() => fail('wrong password: no clean error'))
+    await p2.getByLabel('Mot de passe maître').fill(master)
+    await p2.locator('form button[type=submit]').click()
+    await p2.getByText('E2E entry').first().waitFor({ timeout: 20000 }).catch(async () => { await p2.screenshot({ path: join(tmp, 'fail.png') }); fail('downloaded file did not reopen with its entry: ' + (await p2.locator('body').innerText()).slice(0, 400)) })
+    await ctx2.close()
+  }
+
+  // ---- Phase 3: auto-lock with unsaved changes -> encrypted recovery copy -> unlock -> download save ----
+  const idbRecords = () =>
+    page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const req = indexedDB.open('keyhold')
+          req.onsuccess = () => {
+            const t = req.result.transaction('vaults')
+            const out = []
+            const cur = t.objectStore('vaults').openCursor()
+            cur.onsuccess = () => {
+              const c = cur.result
+              if (!c) return resolve(out)
+              out.push({ key: String(c.key), pending: c.value.pendingChanges === true, bytes: Array.from(new Uint8Array(c.value.encrypted)) })
+              c.continue()
+            }
+          }
+        }),
+    )
+  {
+    await page.getByRole('button', { name: /Nouvelle entrée|Ajouter/ }).first().click()
+    await page.getByLabel('Titre').fill('Recovery entry')
+    await page.locator('form button[type=submit]').click()
+    await page.getByText('Recovery entry').first().waitFor()
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    })
+    await page.getByLabel('Mot de passe maître').waitFor({ timeout: 20000 })
+    await page.waitForTimeout(500)
+    const pending = (await idbRecords()).filter((r) => r.pending)
+    if (pending.length !== 1) fail(`expected 1 recovery copy after auto-lock, got ${pending.length}`)
+    else if (pending[0].bytes.slice(0, 4).map((x) => x.toString(16).padStart(2, '0')).join('') !== '03d9a29a') fail('recovery copy is not KDBX')
+    await page.getByLabel('Mot de passe maître').fill(master)
+    await page.locator('form button[type=submit]').click()
+    await page.getByText('Recovery entry').first().waitFor({ timeout: 20000 }).catch(() => fail('recovered changes missing after unlock'))
+    const dl2 = page.waitForEvent('download', { timeout: 20000 })
+    await page.keyboard.press('Control+s')
+    const saved2 = join(tmp, 'saved2.kdbx')
+    await (await dl2).saveAs(saved2)
+    await page.waitForTimeout(800)
+    const after = (await idbRecords()).filter((r) => r.pending)
+    const downloaded = Array.from(readFileSync(saved2))
+    if (after.length !== 1) fail(`download save must keep the recovery copy (got ${after.length})`)
+    else if (JSON.stringify(after[0].bytes) !== JSON.stringify(downloaded)) fail('recovery copy not refreshed with the downloaded bytes')
+  }
+
   if (storage.idb.length !== 1) fail(`expected 1 encrypted IndexedDB record, got ${storage.idb.length}`)
   if (external.length) fail(`requests to other origins: ${external.join(', ')}`)
   if (cspErrors.length) fail(`CSP/page errors: ${cspErrors.join(' | ')}`)
-  if (!process.exitCode) process.stdout.write(`e2e: OK (HIBP requests: ${hibp.length}, IndexedDB records: ${storage.idb.length} encrypted, external: 0, CSP violations: 0)\n`)
+  if (!process.exitCode) process.stdout.write(`e2e: OK (HIBP: prefix-only, ${hibp.length} req, none while typing; IndexedDB: encrypted only; download round-trip + wrong password OK; auto-lock recovery + refresh OK; external: 0; CSP violations: 0)\n`)
 } finally {
   await browser.close()
   server.close()

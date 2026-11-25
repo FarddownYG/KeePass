@@ -28,10 +28,10 @@ Le fichier reste le vôtre : ouvrez-le à tout moment dans KeePassXC.
 | Exigence | Mise en œuvre |
 |---|---|
 | Zéro connaissance | Chiffrement/déchiffrement local via [kdbxweb](https://github.com/keeweb/kdbxweb) (MIT) + WebCrypto. Rien en clair ne quitte l'appareil. |
-| Pas de crypto maison | Format KDBX 4 par kdbxweb ; Argon2 par [hash-wasm](https://github.com/Daninet/hash-wasm) (MIT) dans un Web Worker ; SHA-1/SHA-256/AES/HMAC par WebCrypto ; aléa par `crypto.getRandomValues` (tirage sans biais). |
-| KDF par défaut | Argon2id, 64 Mio, 10 itérations, parallélisme 2 (~1 s sur un portable récent ; ~2 s à l'enregistrement, vérification incluse). |
+| Pas de crypto maison | Format KDBX 4 par kdbxweb ; Argon2 par [@noble/hashes](https://github.com/paulmillr/noble-hashes) (MIT, audité, JavaScript pur — pas de WebAssembly) dans un Web Worker ; SHA-1/SHA-256/AES/HMAC par WebCrypto ; aléa par `crypto.getRandomValues` (tirage sans biais). |
+| KDF par défaut | Argon2id, 64 Mio, 3 itérations, parallélisme 2 (au-dessus des recommandations OWASP ; ~1 s au déverrouillage, ~2 s à l'enregistrement, vérification incluse). Les coffres existants gardent leurs paramètres ; un coffre KeePassXC très coûteux (ex. 30+ itérations) peut prendre plusieurs secondes à ouvrir. |
 | Réseau | Un seul hôte externe : `api.pwnedpasswords.com`, uniquement pour la vérification HIBP. |
-| HIBP | k-anonymity : SHA-1 calculé localement, **seuls les 5 premiers caractères** hexadécimaux sont envoyés, en-tête `Add-Padding: true`, `credentials: omit`, `cache: no-store`. Requête **uniquement quand on quitte le champ ou sur « Vérifier »**, jamais pendant la frappe (sinon chaque préfixe partiel fuiterait 20 bits). Désactivable dans les réglages. Résultats en mémoire uniquement, effacés au verrouillage. |
+| HIBP | k-anonymity : SHA-1 calculé localement, **seuls les 5 premiers caractères** hexadécimaux sont envoyés, en-tête `Add-Padding: true`, `credentials: omit`, `cache: no-store`. Vérification **automatique à la saisie, dès que la valeur est complète** : en quittant le champ, ou dès qu'un mot de passe généré est inséré (plus le bouton « Vérifier »). Jamais caractère par caractère : sinon chaque préfixe partiel fuiterait 20 bits de l'empreinte du mot de passe en cours de frappe. Désactivable dans les réglages. Résultats en mémoire uniquement, effacés au verrouillage. |
 | Stockage | `localStorage` : préférences d'interface uniquement (thème, délai de verrouillage). IndexedDB : uniquement le fichier `.kdbx` **chiffré** (contrôle de signature KDBX avant écriture). Jamais le mot de passe maître ni le fichier clé. |
 | Presse-papiers | Vidé 30 s après une copie de secret (et au verrouillage) ; une copie ultérieure d'une valeur non secrète annule l'effacement. Si la lecture du presse-papiers est déjà autorisée, il n'est vidé que s'il contient encore le secret (comparaison d'empreinte SHA-256, le secret n'est pas conservé). |
 | Enregistrement | Les enregistrements d'un coffre sont sérialisés (kdbxweb n'est pas ré-entrant) et chaque fichier produit est **redéchiffré avant écriture** : un fichier corrompu n'écrase jamais l'original. Si le fichier sur disque a changé depuis son ouverture (KeePassXC, synchro), l'écriture est refusée (« Enregistrer sous… »). À l'ouverture d'un coffre mémorisé, le fichier d'origine est relu s'il a changé. |
@@ -40,7 +40,7 @@ Le fichier reste le vôtre : ouvrez-le à tout moment dans KeePassXC.
 ### En-têtes HTTP (`vercel.json`)
 
 ```
-Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self';
+Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self';
   img-src 'self' data:; font-src 'self'; connect-src 'self' https://api.pwnedpasswords.com;
   worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none';
   frame-ancestors 'none'; upgrade-insecure-requests
@@ -51,7 +51,7 @@ X-Frame-Options: DENY, Cross-Origin-Opener-Policy: same-origin, Permissions-Poli
 ```
 
 Aucun script ni style inline (vérifié à chaque build par `scripts/check-dist.mjs`).
-`'wasm-unsafe-eval'` est **nécessaire** pour compiler le module WebAssembly d'Argon2 ; il n'autorise ni `eval()` ni `new Function()` (contrairement à `'unsafe-eval'`). Sans lui, Argon2 en JS pur serait 10 à 20× plus lent.
+La CSP n'a **aucune** exception : ni `'unsafe-inline'`, ni `'unsafe-eval'`, ni `'wasm-unsafe-eval'` (Argon2 est en JavaScript pur, exécuté dans un Worker pour ne pas figer l'interface).
 
 ### Modèle de menace
 
@@ -89,7 +89,7 @@ Tests automatisés (`tests/kdbx-fixtures.test.ts`) :
 - base créée nativement par KeePassXC 2.7.6 (avec historique) ; base KeePassXC protégée par fichier clé seul ;
 - fichiers de référence KeePass 2.x de la suite de tests kdbxweb (KDBX 4.1, Argon2id + fichier clé).
 
-Vérifié manuellement : une base Keyhold (Argon2id 64 Mio, fichier clé, tags, champ protégé) s'ouvre dans `keepassxc-cli` 2.7.6.
+Vérifié manuellement : une base Keyhold aux paramètres par défaut (Argon2id 64 Mio / 3 itérations, fichier clé, tags, champ protégé) s'ouvre dans `keepassxc-cli` 2.7.6.
 
 ## Développement
 
@@ -103,7 +103,7 @@ Gates (revue de sécurité indépendante effectuée ; tous les findings critique
 - `npm run lint` : oxlint (`no-explicit-any`, `ban-ts-comment`, `no-console`, …) + `scripts/check-forbidden.mjs` (rejette `any`, `@ts-ignore`, `eslint-disable`, `.skip`, `catch {}` vide, `innerHTML`, `console.*`).
 - `npm test` : aller-retour KDBX, mauvais mot de passe / fichier corrompu, fixtures KeePassXC, HIBP (seul le préfixe de 5 caractères part — `fetch` mocké), isolation réseau (statique + runtime), générateur.
 - `npm run build` : typecheck + build + `scripts/check-dist.mjs` (HTML sans inline).
-- `npm run e2e` : Playwright sur `dist/` servi avec les en-têtes exacts de `vercel.json` — aucune violation CSP, aucune requête HIBP pendant la frappe, préfixe de 5 caractères + `Add-Padding` seulement, aucune requête vers une autre origine, aucun secret dans localStorage/sessionStorage/titre/URL, IndexedDB ne contient que des conteneurs KDBX chiffrés.
+- `npm run e2e` : Playwright sur `dist/` servi avec les en-têtes exacts de `vercel.json` — aller-retour réel créer → enregistrer (téléchargement) → rouvrir dans un profil vierge, mauvais mot de passe = erreur propre, verrouillage auto avec copie de récupération chiffrée puis rafraîchie à l'enregistrement — aucune violation CSP, aucune requête HIBP pendant la frappe, préfixe de 5 caractères + `Add-Padding` seulement, aucune requête vers une autre origine, aucun secret dans localStorage/sessionStorage/titre/URL, IndexedDB ne contient que des conteneurs KDBX chiffrés.
 
 ## Déploiement (Vercel)
 
@@ -114,7 +114,7 @@ Projet Vercel relié au dépôt GitHub, framework « Vite », commande `npm run 
 ## Licences et crédits
 
 - Code : MIT.
-- [kdbxweb](https://github.com/keeweb/kdbxweb) (MIT), [hash-wasm](https://github.com/Daninet/hash-wasm) (MIT), [zxcvbn-ts](https://github.com/zxcvbn-ts/zxcvbn) (MIT), [lucide](https://lucide.dev) (ISC), Inter (OFL).
+- [kdbxweb](https://github.com/keeweb/kdbxweb) (MIT), [@noble/hashes](https://github.com/paulmillr/noble-hashes) (MIT), [zxcvbn-ts](https://github.com/zxcvbn-ts/zxcvbn) (MIT), [lucide](https://lucide.dev) (ISC), Inter (OFL).
 - Liste de mots : [EFF Large Wordlist](https://www.eff.org/dice) — Electronic Frontier Foundation, CC BY 3.0 US.
 - Fixtures de test : voir `tests/fixtures/README.md`.
 - « KeePass » et « KeePassXC » sont des projets indépendants ; Keyhold n'y est pas affilié.
