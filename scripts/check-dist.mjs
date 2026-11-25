@@ -1,6 +1,6 @@
 // Post-build gate: no inline script/style in HTML, no third-party origins referenced by HTML.
 import { readFileSync, readdirSync } from 'node:fs'
-import { tokenizer } from 'acorn'
+import { parse } from 'acorn'
 import { join } from 'node:path'
 
 const DIST = 'dist'
@@ -36,7 +36,10 @@ const isExternal = (v) => {
 
 function stringTokens(js) {
   const out = []
-  for (const t of tokenizer(js, { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true })) {
+  // Full parse (not the standalone tokenizer): the parser context disambiguates '/' (division vs regex).
+  const tokens = []
+  parse(js, { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true, onToken: tokens })
+  for (const t of tokens) {
     if (t.type.label === 'string') out.push({ value: String(t.value), start: t.start })
     else if (t.type.label === 'template' && typeof t.value === 'string') out.push({ value: t.value, start: t.start })
     // Regex literals can be turned into strings (.source): scan their pattern too (\/ unescaped).
