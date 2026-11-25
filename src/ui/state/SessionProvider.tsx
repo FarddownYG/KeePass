@@ -4,7 +4,7 @@ import { clearClipboardNow } from '../../core/clipboard'
 import { saveVaultFile } from '../../core/files'
 import { clearHibpCache } from '../../core/hibp'
 import { loadSettings, saveSettings, type Settings } from '../../core/settings'
-import { forgetVault, loadRememberedVault, rememberVault, type StoredVault } from '../../core/storage'
+import { forgetVault, getRememberedVault, loadRememberedVault, rememberVault, type StoredVault } from '../../core/storage'
 import { saveVault, type Kdbx } from '../../core/vault'
 import { SessionContext, type SessionApi, type SessionState } from './session-context'
 import { useToast } from './toast-context'
@@ -70,11 +70,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const updateSettings = useCallback((patch: Partial<Settings>): void => {
-    setSettings((prev) => {
-      const next = { ...prev, ...patch }
-      saveSettings(next)
-      return next
-    })
+    // Updated synchronously so in-flight storage writes see the new value (e.g. "remember" switched off).
+    const next = { ...settingsRef.current, ...patch }
+    settingsRef.current = next
+    saveSettings(next)
+    setSettings(next)
   }, [])
 
   const lock = useCallback((): void => {
@@ -84,26 +84,50 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     refreshRemembered()
   }, [refreshRemembered])
 
-  const remember = useCallback(async (name: string, encrypted: ArrayBuffer, handle: FileSystemFileHandle | null, fileLastModified: number | null): Promise<void> => {
-    try {
-      if (!settingsRef.current.rememberVault) {
-        // Setting off: drop THIS vault's temporary auto-lock recovery copy once it is safely persisted.
-        // Records are per vault, so other vaults' recovery copies are untouched.
-        await forgetVault(name)
-      } else {
-        await rememberVault({ name, encrypted, handle, savedAt: Date.now(), fileLastModified })
+  /**
+   * Updates this device's encrypted copy of a vault.
+   * - 'open': never touches a pending recovery copy (only a successful save may clear unsaved changes).
+   * - 'save': the vault is persisted; `previousName` (Save As) drops the old name's recovery copy.
+   */
+  const remember = useCallback(
+    async (
+      mode: 'open' | 'save',
+      name: string,
+      encrypted: ArrayBuffer,
+      handle: FileSystemFileHandle | null,
+      fileLastModified: number | null,
+      previousName?: string,
+    ): Promise<void> => {
+      try {
+        if (mode === 'open') {
+          const existing = await getRememberedVault(name)
+          if (existing?.pendingChanges) return
+        }
+        if (mode === 'save' && previousName && previousName !== name) {
+          const old = await getRememberedVault(previousName)
+          if (old?.pendingChanges) await forgetVault(previousName)
+        }
+        if (settingsRef.current.rememberVault) {
+          await rememberVault({ name, encrypted, handle, savedAt: Date.now(), fileLastModified })
+          // The setting may have been switched off meanwhile: honour it.
+          if (!settingsRef.current.rememberVault) await forgetVault(name)
+        } else if (mode === 'save') {
+          // Setting off: drop THIS vault's temporary recovery copy once it is safely persisted.
+          await forgetVault(name)
+        }
+        setRemembered(await loadRememberedVault())
+      } catch {
+        // IndexedDB unavailable (private window…): the vault simply is not remembered.
       }
-      setRemembered(await loadRememberedVault())
-    } catch {
-      // IndexedDB unavailable (private window…): the vault simply is not remembered.
-    }
-  }, [])
+    },
+    [],
+  )
 
   const openDb = useCallback(
     (db: Kdbx, fileName: string, handle: FileSystemFileHandle | null, encrypted?: ArrayBuffer, pending = false, fileLastModified: number | null = null): void => {
       setState({ db, fileName, handle, fileLastModified, dirty: pending, rev: pending ? 1 : 0 })
       if (pending) toast('Modifications non enregistrées récupérées — pensez à enregistrer')
-      if (encrypted) void remember(fileName, encrypted, handle, fileLastModified)
+      if (encrypted) void remember('open', fileName, encrypted, handle, fileLastModified)
     },
     [remember, toast],
   )
@@ -173,7 +197,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           s.db === db ? { ...s, handle: newHandle, fileName: newName, fileLastModified: newLastModified, dirty: s.rev !== revAtStart } : s,
         )
         lastPersistedRef.current = { id: vaultId(db), rev: revAtStart, lastModified: newLastModified }
-        await remember(newName, bytes, newHandle, newLastModified)
+        await remember('save', newName, bytes, newHandle, newLastModified, fileName)
         toast(res.method === 'download' ? 'Fichier téléchargé' : 'Enregistré')
         ok = true
         return true

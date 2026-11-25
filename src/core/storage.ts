@@ -55,8 +55,31 @@ export async function rememberVault(v: StoredVault): Promise<void> {
   await tx('readwrite', (s) => s.put(v, keyOf(v.name)))
 }
 
+const LEGACY_KEY = 'recent'
+
+/** One-time migration of the single-record layout (key 'recent') to per-vault records. */
+async function migrateLegacy(): Promise<void> {
+  const legacy = await tx<StoredVault | undefined>('readonly', (s) => s.get(LEGACY_KEY) as IDBRequest<StoredVault | undefined>)
+  if (!legacy) return
+  const current = await getRememberedVault(legacy.name)
+  // Keep whichever matters more: a pending copy wins, then the most recent.
+  const keepLegacy = !current || (legacy.pendingChanges === true && current.pendingChanges !== true) || (current.pendingChanges === legacy.pendingChanges && legacy.savedAt > current.savedAt)
+  if (keepLegacy) await tx('readwrite', (s) => s.put(legacy, keyOf(legacy.name)))
+  await tx('readwrite', (s) => s.delete(LEGACY_KEY))
+}
+
+export async function getRememberedVault(name: string): Promise<StoredVault | null> {
+  try {
+    const v = await tx<StoredVault | undefined>('readonly', (s) => s.get(keyOf(name)) as IDBRequest<StoredVault | undefined>)
+    return v ?? null
+  } catch {
+    return null
+  }
+}
+
 export async function loadRememberedVault(): Promise<StoredVault | null> {
   try {
+    await migrateLegacy()
     const all = await tx<StoredVault[]>('readonly', (s) => s.getAll() as IDBRequest<StoredVault[]>)
     if (all.length === 0) return null
     // Unsaved recovery copies first (most recent), then the most recently used vault.

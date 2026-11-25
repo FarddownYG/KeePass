@@ -23,3 +23,22 @@ describe('IndexedDB storage', () => {
     expect(await loadRememberedVault()).toBeNull()
   })
 })
+
+describe('legacy single-record layout', () => {
+  it("migrates the old 'recent' record to a per-vault record", async () => {
+    await forgetVault()
+    const db = await new Promise<IDBDatabase>((resolve) => {
+      const r = indexedDB.open('keyhold', 1)
+      r.onsuccess = () => resolve(r.result)
+    })
+    await new Promise<void>((resolve) => {
+      const t = db.transaction('vaults', 'readwrite')
+      t.objectStore('vaults').put({ name: 'Old.kdbx', encrypted: kdbx(9), handle: null, savedAt: 9, pendingChanges: true }, 'recent')
+      t.oncomplete = () => resolve()
+    })
+    db.close()
+    expect((await loadRememberedVault())?.name).toBe('Old.kdbx')
+    await forgetVault('Old.kdbx')
+    expect(await loadRememberedVault()).toBeNull()
+  })
+})
