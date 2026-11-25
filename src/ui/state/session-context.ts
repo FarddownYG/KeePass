@@ -7,6 +7,8 @@ export interface SessionState {
   db: Kdbx | null
   fileName: string
   handle: FileSystemFileHandle | null
+  /** lastModified of the file on disk when last read/written (conflict detection). */
+  fileLastModified: number | null
   dirty: boolean
   /** Bumped after every mutation: kdbxweb objects are mutable, React needs a nudge. */
   rev: number
@@ -18,8 +20,10 @@ export interface SessionApi extends SessionState {
   /** undefined = still loading, null = nothing remembered. */
   remembered: StoredVault | null | undefined
   saving: boolean
+  /** An encrypted auto-lock recovery copy is being written: unlocking must wait. */
+  recovering: boolean
   /** Opens an already-decrypted vault (after unlock). */
-  openDb: (db: Kdbx, fileName: string, handle: FileSystemFileHandle | null, encrypted?: ArrayBuffer, pending?: boolean) => void
+  openDb: (db: Kdbx, fileName: string, handle: FileSystemFileHandle | null, encrypted?: ArrayBuffer, pending?: boolean, fileLastModified?: number | null) => void
   /** Registers a freshly created vault; optionally writes it to disk right away. */
   adoptNewVault: (db: Kdbx, fileName: string, saveNow: boolean) => Promise<void>
   /** Runs a mutation on the vault, then flags it dirty and re-renders. */

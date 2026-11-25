@@ -1,7 +1,7 @@
-import { AlertTriangle, Check, Loader2, WifiOff } from 'lucide-react'
+import { AlertTriangle, Check, Loader2, ShieldQuestion, WifiOff } from 'lucide-react'
 import type { BreachState } from '../state/usePasswordAnalysis'
 
-export function BreachStatus({ state }: { state: BreachState }) {
+export function BreachStatus({ state, onCheck }: { state: BreachState; onCheck?: () => void }) {
   let body = null
   switch (state.status) {
     case 'loading':
@@ -35,6 +35,14 @@ export function BreachStatus({ state }: { state: BreachState }) {
           Vérification indisponible
         </span>
       )
+      break
+    case 'idle':
+      body = onCheck ? (
+        <button type="button" onClick={onCheck} className="flex items-center gap-1.5 rounded-sm text-accent-text hover:underline">
+          <ShieldQuestion className="size-3.5 shrink-0" aria-hidden />
+          Vérifier dans les fuites connues
+        </button>
+      ) : null
       break
     default:
       body = null

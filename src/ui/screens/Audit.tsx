@@ -5,6 +5,7 @@ import { estimateStrength } from '../../core/strength'
 import { allEntries, fieldText, isExpired, type Kdbx } from '../../core/vault'
 import { Button } from '../components/Button'
 import { ToolHeader } from '../components/ToolHeader'
+import { useSession } from '../state/session-context'
 import { findEntry } from './vault-utils'
 
 export interface AuditResult {
@@ -28,6 +29,7 @@ interface AuditProps {
 }
 
 export function Audit({ db, result, onResult, onOpenEntry, onBack }: AuditProps) {
+  const { settings } = useSession()
   const [running, setRunning] = useState(false)
   const [phase, setPhase] = useState<'local' | 'breach'>('local')
   const [progress, setProgress] = useState({ done: 0, total: 0 })
@@ -65,7 +67,7 @@ export function Audit({ db, result, onResult, onOpenEntry, onBack }: AuditProps)
     const base: AuditResult = { ranAt: Date.now(), weak, reused, expired, pwned: [], breachStatus: 'skipped', checked: items.length }
     onResult(base)
 
-    if (items.length > 0 && !controller.signal.aborted) {
+    if (items.length > 0 && !controller.signal.aborted && settings.hibpEnabled) {
       setPhase('breach')
       setProgress({ done: 0, total: items.length })
       try {

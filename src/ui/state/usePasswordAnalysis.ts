@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { pwnedCount } from '../../core/hibp'
 import { estimateStrength, type Strength } from '../../core/strength'
+import { useSession } from './session-context'
 
 export type BreachState =
   | { status: 'idle' }
+  | { status: 'disabled' }
   | { status: 'loading' }
   | { status: 'clean' }
   | { status: 'found'; count: number }
@@ -12,15 +14,23 @@ export type BreachState =
 export interface PasswordAnalysis {
   strength: Strength | null
   breach: BreachState
+  /** Runs the HIBP lookup for the CURRENT complete password (call on blur or on explicit request). */
+  checkBreach: () => void
 }
 
 const STRENGTH_DELAY_MS = 200
-const BREACH_DELAY_MS = 700
 
-/** Debounced local strength estimate + HIBP range lookup (k-anonymity, see core/hibp). */
-export function usePasswordAnalysis(password: string, userInputs: string[] = [], checkBreach = true): PasswordAnalysis {
+/**
+ * Local strength estimate (debounced) + HIBP range lookup.
+ * The HIBP lookup is NEVER triggered while typing: only on an explicit call (field blur / "Vérifier"),
+ * so partial passwords are never hashed and sent (each request reveals a 5-hex-char prefix).
+ */
+export function usePasswordAnalysis(password: string, userInputs: string[] = [], allowBreach = true): PasswordAnalysis {
+  const { settings } = useSession()
+  const enabled = allowBreach && settings.hibpEnabled
   const [strength, setStrength] = useState<Strength | null>(null)
   const [breachRes, setBreachRes] = useState<{ for: string; state: BreachState } | null>(null)
+  const ctrlRef = useRef<AbortController | null>(null)
   const inputsKey = userInputs.join('\u0000')
 
   useEffect(() => {
@@ -41,25 +51,28 @@ export function usePasswordAnalysis(password: string, userInputs: string[] = [],
     }
   }, [password, inputsKey])
 
-  useEffect(() => {
-    if (!password || !checkBreach) return
+  useEffect(() => () => ctrlRef.current?.abort(), [])
+
+  const checkBreach = useCallback((): void => {
+    if (!enabled || !password) return
+    if (breachRes?.for === password && breachRes.state.status !== 'error') return
+    ctrlRef.current?.abort()
     const ctrl = new AbortController()
-    const t = window.setTimeout(() => {
-      pwnedCount(password, { signal: ctrl.signal })
-        .then((count) => {
-          if (!ctrl.signal.aborted) setBreachRes({ for: password, state: count > 0 ? { status: 'found', count } : { status: 'clean' } })
-        })
-        .catch(() => {
-          if (!ctrl.signal.aborted) setBreachRes({ for: password, state: { status: 'error' } })
-        })
-    }, BREACH_DELAY_MS)
-    return () => {
-      ctrl.abort()
-      window.clearTimeout(t)
-    }
-  }, [password, checkBreach])
+    ctrlRef.current = ctrl
+    const target = password
+    setBreachRes({ for: target, state: { status: 'loading' } })
+    pwnedCount(target, { signal: ctrl.signal })
+      .then((count) => {
+        if (!ctrl.signal.aborted) setBreachRes({ for: target, state: count > 0 ? { status: 'found', count } : { status: 'clean' } })
+      })
+      .catch(() => {
+        if (!ctrl.signal.aborted) setBreachRes({ for: target, state: { status: 'error' } })
+      })
+  }, [enabled, password, breachRes])
 
   let breach: BreachState = { status: 'idle' }
-  if (password && checkBreach) breach = breachRes?.for === password ? breachRes.state : { status: 'loading' }
-  return { strength: password ? strength : null, breach }
+  if (!allowBreach || !password) breach = { status: 'idle' }
+  else if (!settings.hibpEnabled) breach = { status: 'disabled' }
+  else if (breachRes?.for === password) breach = breachRes.state
+  return { strength: password ? strength : null, breach, checkBreach }
 }

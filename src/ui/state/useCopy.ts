@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import { copySecret } from '../../core/clipboard'
+import { copyPlain, copySecret } from '../../core/clipboard'
 import { useToast } from './toast-context'
 
 /** Copies a secret (auto-wiped after 30 s) or a plain value, and confirms with a toast. */
@@ -14,7 +14,7 @@ export function useCopy(): (getText: () => string, opts?: { secret?: boolean; la
           await copySecret(text)
           toast('Copié — effacé du presse-papiers dans 30 s')
         } else {
-          await navigator.clipboard.writeText(text)
+          await copyPlain(text)
           toast('Copié')
         }
       }

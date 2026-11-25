@@ -15,6 +15,8 @@ export interface StoredVault {
   savedAt: number
   /** Encrypted copy written by auto-lock with changes not yet saved to the file. */
   pendingChanges?: boolean
+  /** lastModified of the file behind `handle` when these bytes were read/written (conflict detection). */
+  fileLastModified?: number | null
 }
 
 function openDb(): Promise<IDBDatabase> {

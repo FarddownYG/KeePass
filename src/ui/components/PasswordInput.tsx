@@ -15,9 +15,10 @@ interface PasswordInputProps {
   actions?: ReactNode
   autoFocus?: boolean
   required?: boolean
+  onBlur?: () => void
 }
 
-export function PasswordInput({ label, value, onChange, autoComplete, disabled, error, hint, actions, autoFocus, required }: PasswordInputProps) {
+export function PasswordInput({ label, value, onChange, autoComplete, disabled, error, hint, actions, autoFocus, required, onBlur }: PasswordInputProps) {
   const id = useId()
   const [shown, setShown] = useState(false)
   return (
@@ -28,6 +29,7 @@ export function PasswordInput({ label, value, onChange, autoComplete, disabled, 
           type={shown ? 'text' : 'password'}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onBlur={onBlur}
           autoComplete={autoComplete}
           autoCapitalize="off"
           autoCorrect="off"

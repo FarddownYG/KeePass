@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { FilePlus2, FolderOpen, KeyRound, Lock, ShieldCheck, FileCheck2 } from 'lucide-react'
+import { FilePlus2, FolderOpen, KeyRound, Lock, ShieldCheck, FileCheck2, Loader2 } from 'lucide-react'
 import { pickVaultFile } from '../../core/files'
 import { Button } from '../components/Button'
 import { useSession } from '../state/session-context'
@@ -15,6 +15,8 @@ export interface UnlockTarget {
   fromDevice: boolean
   /** Remembered copy holds changes not yet saved to the file (auto-lock recovery). */
   pending?: boolean
+  /** lastModified of the file behind `handle` for these bytes. */
+  lastModified?: number | null
 }
 
 const POINTS = [
@@ -24,7 +26,7 @@ const POINTS = [
 ]
 
 export function Welcome() {
-  const { remembered, forgetDevice } = useSession()
+  const { remembered, forgetDevice, recovering } = useSession()
   const [picked, setPicked] = useState<UnlockTarget | null>(null)
   const [creating, setCreating] = useState(false)
   const [pickError, setPickError] = useState<string | null>(null)
@@ -32,7 +34,7 @@ export function Welcome() {
   const target: UnlockTarget | null =
     picked ??
     (remembered
-      ? { name: remembered.name, bytes: remembered.encrypted, handle: remembered.handle, savedAt: remembered.savedAt, fromDevice: true, pending: remembered.pendingChanges === true }
+      ? { name: remembered.name, bytes: remembered.encrypted, handle: remembered.handle, savedAt: remembered.savedAt, fromDevice: true, pending: remembered.pendingChanges === true, lastModified: remembered.fileLastModified ?? null }
       : null)
 
   const openFile = async (): Promise<void> => {
@@ -41,7 +43,7 @@ export function Welcome() {
       const f = await pickVaultFile()
       if (f) {
         setCreating(false)
-        setPicked({ name: f.name, bytes: f.bytes, handle: f.handle, savedAt: null, fromDevice: false })
+        setPicked({ name: f.name, bytes: f.bytes, handle: f.handle, savedAt: null, fromDevice: false, lastModified: f.lastModified })
       }
     } catch {
       setPickError('Impossible de lire ce fichier.')
@@ -59,6 +61,13 @@ export function Welcome() {
   let content
   if (creating) {
     content = <CreateForm onBack={() => setCreating(false)} />
+  } else if (recovering) {
+    content = (
+      <p className="flex items-center gap-2 text-base text-fg-muted" role="status">
+        <Loader2 className="size-4 animate-spin" aria-hidden />
+        Verrouillé. Chiffrement des modifications non enregistrées…
+      </p>
+    )
   } else if (remembered === undefined && !picked) {
     content = <div className="h-40" aria-hidden />
   } else if (target) {

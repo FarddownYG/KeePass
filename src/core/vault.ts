@@ -102,13 +102,33 @@ export async function openVault(data: ArrayBuffer | Uint8Array, creds: Credentia
   }
 }
 
-export async function saveVault(db: Kdbx): Promise<ArrayBuffer> {
+/** kdbxweb's save() is not re-entrant: every save of a given vault is serialised through this chain. */
+const saveChains = new WeakMap<Kdbx, Promise<unknown>>()
+
+/**
+ * Serialises, encrypts and VERIFIES the vault: the produced bytes are decrypted again with the same
+ * credentials before being returned, so a corrupt file can never be written over the user's data.
+ */
+export function saveVault(db: Kdbx): Promise<ArrayBuffer> {
   installArgon2()
-  try {
-    return await db.save()
-  } catch (err) {
-    throw mapError(err)
+  const run = async (): Promise<ArrayBuffer> => {
+    let bytes: ArrayBuffer
+    try {
+      bytes = await db.save()
+    } catch (err) {
+      throw mapError(err)
+    }
+    try {
+      await kdbxweb.Kdbx.load(bytes.slice(0), db.credentials)
+    } catch {
+      throw new VaultError('save-verify-failed')
+    }
+    return bytes
   }
+  const prev = saveChains.get(db) ?? Promise.resolve()
+  const next = prev.then(run, run)
+  saveChains.set(db, next.catch(() => undefined))
+  return next
 }
 
 /** Changes master password and/or key file. Takes effect on next save. */

@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { FileKey, FilePlus2, FolderOpen, LockOpen, Trash2 } from 'lucide-react'
 import { VaultError } from '../../core/errors'
-import { pickKeyFile } from '../../core/files'
+import { pickKeyFile, rereadHandle } from '../../core/files'
 import { openVault } from '../../core/vault'
 import { Button } from '../components/Button'
 import { PasswordInput } from '../components/PasswordInput'
@@ -40,9 +40,22 @@ export function UnlockForm({ target, onOpenOther, onCreate, onForget, onBack }: 
     setBusy(true)
     setError(null)
     try {
-      const db = await openVault(target.bytes.slice(0), { password, keyFile: keyFile?.bytes ?? null })
+      // Remembered vault with a file handle: prefer the current file on disk (it may have been edited
+      // in KeePassXC or synced since). A pending recovery copy is kept; conflicts are caught on save.
+      let bytes = target.bytes
+      let lastModified = target.lastModified ?? null
+      let fresh = !target.fromDevice
+      if (target.fromDevice && target.handle && !target.pending) {
+        const disk = await rereadHandle(target.handle)
+        if (disk && disk.lastModified !== lastModified) {
+          bytes = disk.bytes
+          lastModified = disk.lastModified
+          fresh = true
+        }
+      }
+      const db = await openVault(bytes.slice(0), { password, keyFile: keyFile?.bytes ?? null })
       setPassword('')
-      openDb(db, target.name, target.handle, target.fromDevice ? undefined : target.bytes, target.pending === true)
+      openDb(db, target.name, target.handle, fresh ? bytes : undefined, target.pending === true, lastModified)
     } catch (err) {
       setError(err instanceof VaultError ? err.message : "Impossible d'ouvrir la base.")
       setBusy(false)
@@ -59,7 +72,7 @@ export function UnlockForm({ target, onOpenOther, onCreate, onForget, onBack }: 
 
       <PasswordInput
         label="Mot de passe maître"
-        autoComplete="current-password"
+        autoComplete="off"
         value={password}
         onChange={setPassword}
         disabled={busy}

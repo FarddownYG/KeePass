@@ -106,7 +106,7 @@ export function SettingsScreen({ db, onBack }: { db: Kdbx; onBack: () => void })
         <Card title="Cet appareil">
           <Checkbox
             label="Mémoriser le coffre sur cet appareil"
-            hint="Garde une copie chiffrée (jamais le mot de passe) pour déverrouiller plus vite. Désactiver supprime cette copie."
+            hint="Garde une copie chiffrée (jamais le mot de passe) pour déverrouiller plus vite et hors ligne. Désactiver supprime cette copie. Même désactivé, si le verrouillage automatique survient avec des modifications non enregistrées, une copie chiffrée temporaire est conservée pour ne rien perdre ; elle est supprimée au prochain enregistrement."
             checked={settings.rememberVault}
             onChange={setRemember}
           />
@@ -115,6 +115,15 @@ export function SettingsScreen({ db, onBack }: { db: Kdbx; onBack: () => void })
               Oublier les données de cet appareil
             </Button>
           </div>
+        </Card>
+
+        <Card title="Fuites de données">
+          <Checkbox
+            label="Vérifier les mots de passe avec Have I Been Pwned"
+            hint="Uniquement quand vous quittez le champ ou cliquez sur « Vérifier » : seuls les 5 premiers caractères de l’empreinte SHA-1 sont envoyés. Jamais pendant la frappe."
+            checked={settings.hibpEnabled}
+            onChange={(hibpEnabled) => updateSettings({ hibpEnabled })}
+          />
         </Card>
 
         <Card title="Identifiants du coffre">

@@ -9,7 +9,7 @@ import { saveVault, type Kdbx } from '../../core/vault'
 import { SessionContext, type SessionApi, type SessionState } from './session-context'
 import { useToast } from './toast-context'
 
-const EMPTY: SessionState = { db: null, fileName: '', handle: null, dirty: false, rev: 0 }
+const EMPTY: SessionState = { db: null, fileName: '', handle: null, fileLastModified: null, dirty: false, rev: 0 }
 
 function applyTheme(pref: Settings['theme']): void {
   const dark = pref === 'dark' || (pref === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
@@ -22,6 +22,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<Settings>(() => loadSettings())
   const [remembered, setRemembered] = useState<StoredVault | null | undefined>(undefined)
   const [saving, setSaving] = useState(false)
+  const [recovering, setRecovering] = useState(false)
 
   const stateRef = useRef(state)
   const settingsRef = useRef(settings)
@@ -69,20 +70,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     refreshRemembered()
   }, [refreshRemembered])
 
-  const remember = useCallback(async (name: string, encrypted: ArrayBuffer, handle: FileSystemFileHandle | null): Promise<void> => {
-    if (!settingsRef.current.rememberVault) return
+  const remember = useCallback(async (name: string, encrypted: ArrayBuffer, handle: FileSystemFileHandle | null, fileLastModified: number | null): Promise<void> => {
     try {
-      await rememberVault({ name, encrypted, handle, savedAt: Date.now() })
+      if (!settingsRef.current.rememberVault) {
+        // Setting off: drop any temporary auto-lock recovery copy once the vault is safely persisted.
+        await forgetVault()
+        setRemembered(null)
+        return
+      }
+      await rememberVault({ name, encrypted, handle, savedAt: Date.now(), fileLastModified })
     } catch {
       // IndexedDB unavailable (private window…): the vault simply is not remembered.
     }
   }, [])
 
   const openDb = useCallback(
-    (db: Kdbx, fileName: string, handle: FileSystemFileHandle | null, encrypted?: ArrayBuffer, pending = false): void => {
-      setState({ db, fileName, handle, dirty: pending, rev: pending ? 1 : 0 })
+    (db: Kdbx, fileName: string, handle: FileSystemFileHandle | null, encrypted?: ArrayBuffer, pending = false, fileLastModified: number | null = null): void => {
+      setState({ db, fileName, handle, fileLastModified, dirty: pending, rev: pending ? 1 : 0 })
       if (pending) toast('Modifications non enregistrées récupérées — pensez à enregistrer')
-      if (encrypted) void remember(fileName, encrypted, handle)
+      if (encrypted) void remember(fileName, encrypted, handle, fileLastModified)
     },
     [remember, toast],
   )
@@ -96,10 +102,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     lock()
     if (!s.db || !s.dirty) return
     const name = s.fileName || `${s.db.meta.name || 'coffre'}.kdbx`
+    setRecovering(true)
     void saveVault(s.db)
-      .then((encrypted) => rememberVault({ name, encrypted, handle: s.handle, savedAt: Date.now(), pendingChanges: true }))
+      .then((encrypted) => rememberVault({ name, encrypted, handle: s.handle, savedAt: Date.now(), pendingChanges: true, fileLastModified: s.fileLastModified }))
       .then(refreshRemembered)
       .catch(() => toast('Verrouillé : les modifications non enregistrées n’ont pas pu être conservées', 'error'))
+      .finally(() => setRecovering(false))
   }, [lock, refreshRemembered, toast])
 
   const persist = useCallback(
@@ -108,14 +116,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const revAtStart = startRev ?? stateRef.current.rev
       try {
         const bytes = await saveVault(db)
-        const res = await saveVaultFile(bytes, { handle, suggestedName: fileName, forcePicker })
+        const expectedLastModified = stateRef.current.db === db ? stateRef.current.fileLastModified : null
+        const res = await saveVaultFile(bytes, { handle, suggestedName: fileName, forcePicker, expectedLastModified })
         if (res.method === 'cancelled') return false
+        if (res.method === 'conflict') {
+          toast('Le fichier a été modifié ailleurs depuis son ouverture. Rien n’a été écrasé : utilisez « Enregistrer sous… ».', 'error')
+          return false
+        }
+        const newLastModified = res.method === 'handle' ? res.lastModified : null
         const newHandle = res.method === 'handle' ? res.handle : handle
         const newName = res.method === 'handle' && res.handle.name ? res.handle.name : fileName
         setState((s) =>
-          s.db === db ? { ...s, handle: newHandle, fileName: newName, dirty: s.rev !== revAtStart } : s,
+          s.db === db ? { ...s, handle: newHandle, fileName: newName, fileLastModified: newLastModified, dirty: s.rev !== revAtStart } : s,
         )
-        await remember(newName, bytes, newHandle)
+        await remember(newName, bytes, newHandle, newLastModified)
         toast(res.method === 'download' ? 'Fichier téléchargé' : 'Enregistré')
         return true
       } catch (err) {
@@ -140,7 +154,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const adoptNewVault = useCallback(
     async (db: Kdbx, fileName: string, saveNow: boolean): Promise<void> => {
-      setState({ db, fileName, handle: null, dirty: true, rev: 1 })
+      setState({ db, fileName, handle: null, fileLastModified: null, dirty: true, rev: 1 })
       if (saveNow) await persist(db, null, fileName, false, 1)
     },
     [persist],
@@ -181,8 +195,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [state.dirty])
 
   const api = useMemo<SessionApi>(
-    () => ({ ...state, settings, updateSettings, remembered, saving, openDb, adoptNewVault, mutate, save, lock, forgetDevice }),
-    [state, settings, updateSettings, remembered, saving, openDb, adoptNewVault, mutate, save, lock, forgetDevice],
+    () => ({ ...state, settings, updateSettings, remembered, saving, recovering, openDb, adoptNewVault, mutate, save, lock, forgetDevice }),
+    [state, settings, updateSettings, remembered, saving, recovering, openDb, adoptNewVault, mutate, save, lock, forgetDevice],
   )
 
   return <SessionContext.Provider value={api}>{children}</SessionContext.Provider>

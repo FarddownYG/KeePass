@@ -82,3 +82,22 @@ describe('HIBP k-anonymity', () => {
     await expect(pwnedCount(PASSWORD, { fetchFn })).rejects.toThrow('HIBP: HTTP 429')
   })
 })
+
+describe('HIBP cache', () => {
+  it('dedupes concurrent requests for the same prefix and is emptied by clearHibpCache', async () => {
+    const fetchFn = mockFetch('')
+    await Promise.all([pwnedCount('same-secret', { fetchFn }), pwnedCount('same-secret', { fetchFn })])
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+    clearHibpCache()
+    await pwnedCount('same-secret', { fetchFn })
+    expect(fetchFn).toHaveBeenCalledTimes(2)
+  })
+
+  it('a failed request is not cached', async () => {
+    const failing = vi.fn<FetchLike>(async () => new Response('', { status: 503 }))
+    await expect(pwnedCount('x-secret', { fetchFn: failing })).rejects.toThrow()
+    const ok = mockFetch('')
+    expect(await pwnedCount('x-secret', { fetchFn: ok })).toBe(0)
+    expect(ok).toHaveBeenCalledTimes(1)
+  })
+})

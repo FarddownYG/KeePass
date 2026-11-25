@@ -49,16 +49,17 @@ export function CredentialsFields({ value, onChange, disabled, baseName, userInp
       <div className="flex flex-col gap-2">
         <PasswordInput
           label="Mot de passe maître"
-          autoComplete="new-password"
+          autoComplete="off"
           value={value.password}
           onChange={(password) => onChange({ ...value, password })}
+          onBlur={analysis.checkBreach}
           disabled={disabled}
         />
         <PasswordFeedback analysis={analysis} />
       </div>
       <PasswordInput
         label="Confirmer le mot de passe"
-        autoComplete="new-password"
+        autoComplete="off"
         value={value.confirm}
         onChange={(confirm) => onChange({ ...value, confirm })}
         disabled={disabled}

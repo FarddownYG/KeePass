@@ -148,6 +148,7 @@ export function EntryForm({ db, entry, defaultGroupId, onClose }: EntryFormProps
               label="Mot de passe"
               value={password}
               onChange={setPassword}
+              onBlur={analysis.checkBreach}
               autoComplete="off"
               actions={
                 <IconButton label="Générateur de mot de passe" variant="secondary" pressed={genOpen} onClick={() => setGenOpen((v) => !v)} className="lg:size-10">

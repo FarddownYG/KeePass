@@ -6,9 +6,11 @@ export interface Settings {
   lockAfterMinutes: number
   lockOnHidden: boolean
   rememberVault: boolean
+  /** Have I Been Pwned range lookups (k-anonymity). */
+  hibpEnabled: boolean
 }
 
-export const DEFAULT_SETTINGS: Settings = { theme: 'system', lockAfterMinutes: 5, lockOnHidden: true, rememberVault: true }
+export const DEFAULT_SETTINGS: Settings = { theme: 'system', lockAfterMinutes: 5, lockOnHidden: true, rememberVault: true, hibpEnabled: true }
 
 const KEY = 'keyhold.settings.v1'
 
@@ -27,6 +29,7 @@ export function loadSettings(): Settings {
           : DEFAULT_SETTINGS.lockAfterMinutes,
       lockOnHidden: typeof p.lockOnHidden === 'boolean' ? p.lockOnHidden : DEFAULT_SETTINGS.lockOnHidden,
       rememberVault: typeof p.rememberVault === 'boolean' ? p.rememberVault : DEFAULT_SETTINGS.rememberVault,
+      hibpEnabled: typeof p.hibpEnabled === 'boolean' ? p.hibpEnabled : DEFAULT_SETTINGS.hibpEnabled,
     }
   } catch {
     return DEFAULT_SETTINGS

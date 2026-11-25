@@ -7,7 +7,7 @@ export function PasswordFeedback({ analysis }: { analysis: PasswordAnalysis }) {
   return (
     <div className="flex flex-col gap-1">
       <StrengthMeter strength={analysis.strength} />
-      <BreachStatus state={analysis.breach} />
+      <BreachStatus state={analysis.breach} onCheck={analysis.checkBreach} />
     </div>
   )
 }

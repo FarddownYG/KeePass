@@ -8,8 +8,8 @@ export const HIBP_ENDPOINT = 'https://api.pwnedpasswords.com/range/'
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>
 
-/** In-memory only (prefix → suffix → count). Cleared on lock. */
-const cache = new Map<string, Map<string, number>>()
+/** In-memory only (prefix → suffix → count, or the in-flight request). Cleared on lock. */
+const cache = new Map<string, Promise<Map<string, number>>>()
 
 export function clearHibpCache(): void {
   cache.clear()
@@ -34,22 +34,29 @@ export function parseRangeResponse(body: string): Map<string, number> {
   return out
 }
 
-async function fetchRange(prefix: string, fetchFn: FetchLike, signal?: AbortSignal): Promise<Map<string, number>> {
+function fetchRange(prefix: string, fetchFn: FetchLike, signal?: AbortSignal): Promise<Map<string, number>> {
   const cached = cache.get(prefix)
   if (cached) return cached
-  const res = await fetchFn(HIBP_ENDPOINT + prefix, {
-    method: 'GET',
-    headers: { 'Add-Padding': 'true' },
-    credentials: 'omit',
-    referrerPolicy: 'no-referrer',
-    cache: 'no-store',
-    mode: 'cors',
-    signal,
+  const request = (async () => {
+    const res = await fetchFn(HIBP_ENDPOINT + prefix, {
+      method: 'GET',
+      headers: { 'Add-Padding': 'true' },
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+      cache: 'no-store',
+      mode: 'cors',
+      signal,
+    })
+    if (!res.ok) throw new Error(`HIBP: HTTP ${res.status}`)
+    return parseRangeResponse(await res.text())
+  })()
+  cache.set(prefix, request)
+  // In-flight requests are cached too (dedupe); a lock clears the map, so a response arriving
+  // afterwards is never re-inserted. Failed requests are dropped so they can be retried.
+  request.catch(() => {
+    if (cache.get(prefix) === request) cache.delete(prefix)
   })
-  if (!res.ok) throw new Error(`HIBP: HTTP ${res.status}`)
-  const map = parseRangeResponse(await res.text())
-  cache.set(prefix, map)
-  return map
+  return request
 }
 
 /** Returns how many times the password appears in known breaches (0 = not found). */
