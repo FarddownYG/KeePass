@@ -25,9 +25,24 @@ const stripC0 = (v) => {
   while (k < v.length && v.charCodeAt(k) <= 0x20) k++
   return v.slice(k)
 }
-const normalise = (lit) => stripC0(lit.replace(/\\\//g, '/').replace(/\\\\/g, '/').replace(/\\/g, '/'))
+/** Decodes JS string escapes (\xHH, \uHHHH, \u{H..}, legacy octal, \n \t …, \<char>) without eval. */
+const unescapeJs = (lit) =>
+  lit.replace(/\\(x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|[0-7]{1,3}|[\s\S])/g, (_, e) => {
+    if (e[0] === 'x') return String.fromCharCode(parseInt(e.slice(1), 16))
+    if (e.startsWith('u{')) return String.fromCodePoint(parseInt(e.slice(2, -1), 16))
+    if (e[0] === 'u' && e.length === 5) return String.fromCharCode(parseInt(e.slice(1), 16))
+    if (/^[0-7]+$/.test(e)) return String.fromCharCode(parseInt(e, 8))
+    return { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v' }[e] ?? e
+  })
+// After decoding: strip leading C0/space, and treat backslashes as slashes (as WHATWG URL parsing does).
+const normalise = (lit) => stripC0(unescapeJs(lit)).replace(/\\/g, '/')
 for (const name of readdirSync(DIST).filter((n) => n === 'sw.js' || /^workbox-.*\.js$/.test(n))) {
   const js = readFileSync(join(DIST, name), 'utf8')
+  // Precache manifest entries: strict allowlist of plain relative paths.
+  for (const m of js.matchAll(/url:\s*(["'`])((?:\\.|(?!\1)[^\\])*)\1/g)) {
+    const u = normalise(m[2])
+    if (!/^[\w.-][\w./-]*$/.test(u) || u.includes('//')) errors.push(`${name}: precache URL not a plain relative path: ${m[2]}`)
+  }
   for (const m of js.matchAll(/importScripts\(([^)]*)\)/g)) {
     const args = [...m[1].matchAll(/["'`]([^"'`]*)["'`]/g)].map((a) => a[1])
     if (args.length === 0) {
