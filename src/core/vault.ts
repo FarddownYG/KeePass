@@ -52,7 +52,7 @@ function mapError(err: unknown): VaultError {
         return new VaultError('corrupt')
     }
   }
-  if (err instanceof Error && /argon2|memory|maxmem|allocation/i.test(err.message)) return new VaultError('kdf-failed')
+  if (err instanceof Error && /argon2|memory|maxmem|allocation|"m"/i.test(err.message)) return new VaultError('kdf-failed')
   if (err instanceof RangeError || err instanceof TypeError) return new VaultError('corrupt')
   return new VaultError('unknown')
 }

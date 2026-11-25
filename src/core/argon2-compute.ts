@@ -17,8 +17,12 @@ export interface Argon2Request {
  * Pure JS on purpose: no WebAssembly, so the CSP needs no 'wasm-unsafe-eval'.
  * Used directly in tests and inside the dedicated worker in the browser.
  */
+/** Refuse absurd KDF costs from a (possibly malicious) file instead of letting the tab run out of memory. */
+export const MAX_ARGON2_MEMORY_KIB = 2 * 1024 * 1024 // 2 GiB
+
 export async function computeArgon2(req: Argon2Request): Promise<Uint8Array> {
+  if (!(req.memoryKiB > 0) || req.memoryKiB > MAX_ARGON2_MEMORY_KIB) throw new Error('argon2 memory cost out of supported range')
   // maxmem raised from noble's 1 GiB default: KeePass allows larger memory costs (the browser may still refuse).
-  const opts = { m: req.memoryKiB, t: req.iterations, p: req.parallelism, dkLen: req.length, version: req.version, maxmem: 2 ** 32 - 1 }
+  const opts = { m: req.memoryKiB, t: req.iterations, p: req.parallelism, dkLen: req.length, version: req.version, maxmem: MAX_ARGON2_MEMORY_KIB * 1024 + 1024 * 1024 }
   return req.type === 2 ? argon2id(req.password, req.salt, opts) : argon2d(req.password, req.salt, opts)
 }

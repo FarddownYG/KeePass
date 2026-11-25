@@ -29,3 +29,13 @@ describe('Argon2 known-answer tests (reference implementation)', () => {
     })
   }
 })
+
+describe('Argon2 cost guard', () => {
+  it('refuses a memory cost above 2 GiB (malicious file) with a kdf-failed error', async () => {
+    const { createVault, openVault, saveVault } = await import('../src/core/vault')
+    const db = createVault('Big', { password: 'pw' }, { memoryKiB: 3 * 1024 * 1024, iterations: 1, parallelism: 1 })
+    await expect(saveVault(db)).rejects.toMatchObject({ code: 'kdf-failed' })
+    const ok = createVault('Ok', { password: 'pw' }, { memoryKiB: 1024, iterations: 1, parallelism: 1 })
+    await expect(openVault(await saveVault(ok), { password: 'pw' })).resolves.toBeDefined()
+  })
+})
