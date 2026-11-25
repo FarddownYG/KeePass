@@ -13,6 +13,8 @@ export interface StoredVault {
   encrypted: ArrayBuffer
   handle: FileSystemFileHandle | null
   savedAt: number
+  /** Encrypted copy written by auto-lock with changes not yet saved to the file. */
+  pendingChanges?: boolean
 }
 
 function openDb(): Promise<IDBDatabase> {

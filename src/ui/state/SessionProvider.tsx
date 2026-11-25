@@ -1,0 +1,189 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { startAutoLock } from '../../core/autolock'
+import { clearClipboardNow } from '../../core/clipboard'
+import { saveVaultFile } from '../../core/files'
+import { clearHibpCache } from '../../core/hibp'
+import { loadSettings, saveSettings, type Settings } from '../../core/settings'
+import { forgetVault, loadRememberedVault, rememberVault, type StoredVault } from '../../core/storage'
+import { saveVault, type Kdbx } from '../../core/vault'
+import { SessionContext, type SessionApi, type SessionState } from './session-context'
+import { useToast } from './toast-context'
+
+const EMPTY: SessionState = { db: null, fileName: '', handle: null, dirty: false, rev: 0 }
+
+function applyTheme(pref: Settings['theme']): void {
+  const dark = pref === 'dark' || (pref === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+}
+
+export function SessionProvider({ children }: { children: ReactNode }) {
+  const toast = useToast()
+  const [state, setState] = useState<SessionState>(EMPTY)
+  const [settings, setSettings] = useState<Settings>(() => loadSettings())
+  const [remembered, setRemembered] = useState<StoredVault | null | undefined>(undefined)
+  const [saving, setSaving] = useState(false)
+
+  const stateRef = useRef(state)
+  const settingsRef = useRef(settings)
+  useEffect(() => {
+    stateRef.current = state
+    settingsRef.current = settings
+  }, [state, settings])
+
+  // Theme
+  useEffect(() => {
+    applyTheme(settings.theme)
+    if (settings.theme !== 'system') return
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = (): void => applyTheme('system')
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [settings.theme])
+
+  const refreshRemembered = useCallback((): void => {
+    void loadRememberedVault().then(setRemembered)
+  }, [])
+
+  useEffect(() => {
+    let alive = true
+    void loadRememberedVault().then((v) => {
+      if (alive) setRemembered(v)
+    })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const updateSettings = useCallback((patch: Partial<Settings>): void => {
+    setSettings((prev) => {
+      const next = { ...prev, ...patch }
+      saveSettings(next)
+      return next
+    })
+  }, [])
+
+  const lock = useCallback((): void => {
+    setState(EMPTY)
+    clearHibpCache()
+    void clearClipboardNow()
+    refreshRemembered()
+  }, [refreshRemembered])
+
+  const remember = useCallback(async (name: string, encrypted: ArrayBuffer, handle: FileSystemFileHandle | null): Promise<void> => {
+    if (!settingsRef.current.rememberVault) return
+    try {
+      await rememberVault({ name, encrypted, handle, savedAt: Date.now() })
+    } catch {
+      // IndexedDB unavailable (private window…): the vault simply is not remembered.
+    }
+  }, [])
+
+  const openDb = useCallback(
+    (db: Kdbx, fileName: string, handle: FileSystemFileHandle | null, encrypted?: ArrayBuffer, pending = false): void => {
+      setState({ db, fileName, handle, dirty: pending, rev: pending ? 1 : 0 })
+      if (pending) toast('Modifications non enregistrées récupérées — pensez à enregistrer')
+      if (encrypted) void remember(fileName, encrypted, handle)
+    },
+    [remember, toast],
+  )
+
+  /**
+   * Auto-lock: the decrypted vault is dropped immediately. If it had unsaved changes, an ENCRYPTED
+   * recovery copy (same KDBX, same credentials) is kept in IndexedDB so nothing is lost.
+   */
+  const autoLock = useCallback((): void => {
+    const s = stateRef.current
+    lock()
+    if (!s.db || !s.dirty) return
+    const name = s.fileName || `${s.db.meta.name || 'coffre'}.kdbx`
+    void saveVault(s.db)
+      .then((encrypted) => rememberVault({ name, encrypted, handle: s.handle, savedAt: Date.now(), pendingChanges: true }))
+      .then(refreshRemembered)
+      .catch(() => toast('Verrouillé : les modifications non enregistrées n’ont pas pu être conservées', 'error'))
+  }, [lock, refreshRemembered, toast])
+
+  const persist = useCallback(
+    async (db: Kdbx, handle: FileSystemFileHandle | null, fileName: string, forcePicker: boolean, startRev?: number): Promise<boolean> => {
+      setSaving(true)
+      const revAtStart = startRev ?? stateRef.current.rev
+      try {
+        const bytes = await saveVault(db)
+        const res = await saveVaultFile(bytes, { handle, suggestedName: fileName, forcePicker })
+        if (res.method === 'cancelled') return false
+        const newHandle = res.method === 'handle' ? res.handle : handle
+        const newName = res.method === 'handle' && res.handle.name ? res.handle.name : fileName
+        setState((s) =>
+          s.db === db ? { ...s, handle: newHandle, fileName: newName, dirty: s.rev !== revAtStart } : s,
+        )
+        await remember(newName, bytes, newHandle)
+        toast(res.method === 'download' ? 'Fichier téléchargé' : 'Enregistré')
+        return true
+      } catch (err) {
+        toast(err instanceof Error ? err.message : "Échec de l'enregistrement", 'error')
+        return false
+      } finally {
+        setSaving(false)
+      }
+    },
+    [remember, toast],
+  )
+
+  const save = useCallback(
+    async (forcePicker = false): Promise<boolean> => {
+      const s = stateRef.current
+      if (!s.db) return false
+      const name = s.fileName || `${s.db.meta.name || 'coffre'}.kdbx`
+      return persist(s.db, s.handle, name, forcePicker)
+    },
+    [persist],
+  )
+
+  const adoptNewVault = useCallback(
+    async (db: Kdbx, fileName: string, saveNow: boolean): Promise<void> => {
+      setState({ db, fileName, handle: null, dirty: true, rev: 1 })
+      if (saveNow) await persist(db, null, fileName, false, 1)
+    },
+    [persist],
+  )
+
+  const mutate = useCallback(<T,>(fn: (db: Kdbx) => T): T | undefined => {
+    const db = stateRef.current.db
+    if (!db) return undefined
+    const result = fn(db)
+    setState((s) => ({ ...s, dirty: true, rev: s.rev + 1 }))
+    return result
+  }, [])
+
+  const forgetDevice = useCallback(async (): Promise<void> => {
+    try {
+      await forgetVault()
+    } finally {
+      setRemembered(null)
+    }
+  }, [])
+
+  // Auto-lock while unlocked.
+  const unlocked = state.db !== null
+  useEffect(() => {
+    if (!unlocked) return
+    return startAutoLock({ timeoutMs: settings.lockAfterMinutes * 60_000, lockOnHidden: settings.lockOnHidden, onLock: autoLock })
+  }, [unlocked, settings.lockAfterMinutes, settings.lockOnHidden, autoLock])
+
+  // Warn before leaving with unsaved changes.
+  useEffect(() => {
+    if (!state.dirty) return
+    const handler = (e: BeforeUnloadEvent): void => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [state.dirty])
+
+  const api = useMemo<SessionApi>(
+    () => ({ ...state, settings, updateSettings, remembered, saving, openDb, adoptNewVault, mutate, save, lock, forgetDevice }),
+    [state, settings, updateSettings, remembered, saving, openDb, adoptNewVault, mutate, save, lock, forgetDevice],
+  )
+
+  return <SessionContext.Provider value={api}>{children}</SessionContext.Provider>
+}
