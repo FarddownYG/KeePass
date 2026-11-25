@@ -15,6 +15,8 @@ export interface UnlockTarget {
   fromDevice: boolean
   /** Remembered copy holds changes not yet saved to the file (auto-lock recovery). */
   pending?: boolean
+  /** Storage key of the remembered record (recovery copies have unique keys). */
+  key?: string
   /** lastModified of the file behind `handle` for these bytes. */
   lastModified?: number | null
 }
@@ -34,7 +36,7 @@ export function Welcome() {
   const target: UnlockTarget | null =
     picked ??
     (remembered
-      ? { name: remembered.name, bytes: remembered.encrypted, handle: remembered.handle, savedAt: remembered.savedAt, fromDevice: true, pending: remembered.pendingChanges === true, lastModified: remembered.fileLastModified ?? null }
+      ? { name: remembered.name, bytes: remembered.encrypted, handle: remembered.handle, savedAt: remembered.savedAt, fromDevice: true, pending: remembered.pendingChanges === true, key: remembered.key, lastModified: remembered.fileLastModified ?? null }
       : null)
 
   const openFile = async (): Promise<void> => {
@@ -52,7 +54,8 @@ export function Welcome() {
 
   const forget = async (): Promise<void> => {
     try {
-      await forgetDevice(remembered?.name)
+      // Never call without a key: that would erase every vault stored on this device.
+      if (remembered?.key) await forgetDevice(remembered.key)
     } finally {
       setPicked(null)
     }

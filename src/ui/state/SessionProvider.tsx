@@ -4,7 +4,7 @@ import { clearClipboardNow } from '../../core/clipboard'
 import { saveVaultFile } from '../../core/files'
 import { clearHibpCache } from '../../core/hibp'
 import { loadSettings, saveSettings, type Settings } from '../../core/settings'
-import { forgetNonPendingVaults, forgetVault, getRememberedVault, loadRememberedVault, rememberVault, type StoredVault } from '../../core/storage'
+import { forgetNonPendingVaults, forgetNormalCopy, forgetVault, loadRememberedVault, rememberVault, saveRecoveryCopy, type StoredVault } from '../../core/storage'
 import { saveVault, type Kdbx } from '../../core/vault'
 import { SessionContext, type SessionApi, type SessionState } from './session-context'
 import { useToast } from './toast-context'
@@ -37,8 +37,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const stateRef = useRef(state)
   const inFlightRef = useRef<Promise<boolean> | null>(null)
-  /** Name of the pending recovery copy this session was unlocked from (only it may be cleared by a save). */
-  const recoveredFromRef = useRef<string | null>(null)
+  /** Storage key of the recovery copy this session was unlocked from (only it may be cleared by a save). */
+  const recoveredKeyRef = useRef<string | null>(null)
   /** Identity token only (no strong reference to the decrypted vault after lock). */
   const lastPersistedRef = useRef<{ id: number; rev: number; lastModified: number | null } | null>(null)
   const settingsRef = useRef(settings)
@@ -81,15 +81,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const lock = useCallback((): void => {
     setState(EMPTY)
+    recoveredKeyRef.current = null
     clearHibpCache()
     void clearClipboardNow()
     refreshRemembered()
   }, [refreshRemembered])
 
   /**
-   * Updates this device's encrypted copy of a vault.
-   * - 'open': never touches a pending recovery copy (only a successful save may clear unsaved changes).
-   * - 'save': the vault is persisted; `previousName` (Save As) drops the old name's recovery copy.
+   * Updates this device's encrypted copies after an open or a successful save.
+   * A save of the session unlocked from a recovery copy removes THAT copy (and only that one).
    */
   const remember = useCallback(
     async (
@@ -98,28 +98,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       encrypted: ArrayBuffer,
       handle: FileSystemFileHandle | null,
       fileLastModified: number | null,
-      previousName?: string,
+      recoveryKey: string | null = null,
     ): Promise<void> => {
       try {
-        // A pending recovery copy may only be replaced/cleared by a save of the session that was
-        // opened FROM it. Any other vault (or a same-named file opened from disk) must leave it alone.
-        const recovered = recoveredFromRef.current
-        const existing = await getRememberedVault(name)
-        if (existing?.pendingChanges && !(mode === 'save' && recovered === name)) {
-          setRemembered(await loadRememberedVault())
-          return
+        if (mode === 'save' && recoveryKey) {
+          await forgetVault(recoveryKey)
+          if (recoveredKeyRef.current === recoveryKey) recoveredKeyRef.current = null
         }
-        if (mode === 'save' && previousName && previousName !== name && recovered === previousName) {
-          await forgetVault(previousName)
-        }
-        if (mode === 'save') recoveredFromRef.current = null
         if (settingsRef.current.rememberVault) {
           await rememberVault({ name, encrypted, handle, savedAt: Date.now(), fileLastModified })
           // The setting may have been switched off meanwhile: honour it.
-          if (!settingsRef.current.rememberVault) await forgetVault(name)
-        } else if (mode === 'save') {
-          // Setting off: drop THIS vault's temporary recovery copy once it is safely persisted.
-          await forgetVault(name)
+          if (!settingsRef.current.rememberVault) await forgetNormalCopy(name)
         }
         setRemembered(await loadRememberedVault())
       } catch {
@@ -130,11 +119,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   )
 
   const openDb = useCallback(
-    (db: Kdbx, fileName: string, handle: FileSystemFileHandle | null, encrypted?: ArrayBuffer, pending = false, fileLastModified: number | null = null): void => {
+    (db: Kdbx, fileName: string, handle: FileSystemFileHandle | null, encrypted?: ArrayBuffer, recoveryKey: string | null = null, fileLastModified: number | null = null): void => {
+      const pending = recoveryKey !== null
       setState({ db, fileName, handle, fileLastModified, dirty: pending, rev: pending ? 1 : 0 })
-      recoveredFromRef.current = pending ? fileName : null
+      recoveredKeyRef.current = recoveryKey
       if (pending) toast('Modifications non enregistrées récupérées — pensez à enregistrer')
-      if (encrypted) void remember('open', fileName, encrypted, handle, fileLastModified)
+      if (encrypted && !pending) void remember('open', fileName, encrypted, handle, fileLastModified)
     },
     [remember, toast],
   )
@@ -145,6 +135,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
    */
   const autoLock = useCallback((): void => {
     const s = stateRef.current
+    const recoveryKey = recoveredKeyRef.current
     lock()
     if (!s.db || !s.dirty) return
     const db = s.db
@@ -159,7 +150,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       if (sameVault && last.rev >= s.rev) return
       const fileLastModified = sameVault ? last.lastModified : s.fileLastModified
       const encrypted = await saveVault(db)
-      await rememberVault({ name, encrypted, handle: s.handle, savedAt: Date.now(), pendingChanges: true, fileLastModified })
+      // Unique key: replaces only the copy this session came from, never another vault's.
+      await saveRecoveryCopy({ name, encrypted, handle: s.handle, savedAt: Date.now(), fileLastModified }, recoveryKey)
     }
     void run()
       .then(refreshRemembered)
@@ -173,6 +165,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const revAtStart = startRev ?? stateRef.current.rev
       // Captured synchronously: a lock during the (multi-second) save must not erase it.
       const openedLastModified = stateRef.current.db === db ? stateRef.current.fileLastModified : null
+      const recoveryKey = stateRef.current.db === db ? recoveredKeyRef.current : null
       const previous = inFlightRef.current
       let done: (v: boolean) => void = () => undefined
       const mine = new Promise<boolean>((r) => {
@@ -204,7 +197,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           s.db === db ? { ...s, handle: newHandle, fileName: newName, fileLastModified: newLastModified, dirty: s.rev !== revAtStart } : s,
         )
         lastPersistedRef.current = { id: vaultId(db), rev: revAtStart, lastModified: newLastModified }
-        await remember('save', newName, bytes, newHandle, newLastModified, fileName)
+        await remember('save', newName, bytes, newHandle, newLastModified, recoveryKey)
         toast(res.method === 'download' ? 'Fichier téléchargé' : 'Enregistré')
         ok = true
         return true
@@ -233,6 +226,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const adoptNewVault = useCallback(
     async (db: Kdbx, fileName: string, saveNow: boolean): Promise<void> => {
       setState({ db, fileName, handle: null, fileLastModified: null, dirty: true, rev: 1 })
+      recoveredKeyRef.current = null
       if (saveNow) await persist(db, null, fileName, false, 1)
     },
     [persist],
@@ -246,10 +240,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return result
   }, [])
 
-  const forgetDevice = useCallback(async (name?: string, keepPending = false): Promise<void> => {
+  const forgetDevice = useCallback(async (key?: string, keepPending = false): Promise<void> => {
     try {
       if (keepPending) await forgetNonPendingVaults()
-      else await forgetVault(name)
+      else await forgetVault(key)
     } finally {
       setRemembered(await loadRememberedVault())
     }

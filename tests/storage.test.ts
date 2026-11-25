@@ -1,57 +1,67 @@
 import 'fake-indexeddb/auto'
-import { describe, expect, it } from 'vitest'
-import { forgetVault, loadRememberedVault, rememberVault } from '../src/core/storage'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { forgetNonPendingVaults, forgetNormalCopy, forgetVault, loadRememberedVault, rememberVault, saveRecoveryCopy } from '../src/core/storage'
 
 const kdbx = (n: number) => new Uint8Array([0x03, 0xd9, 0xa2, 0x9a, n]).buffer
+const base = (name: string, savedAt: number, n = savedAt) => ({ name, encrypted: kdbx(n), handle: null, savedAt })
+
+beforeEach(async () => {
+  await forgetVault()
+})
 
 describe('IndexedDB storage', () => {
   it('refuses anything that is not a KDBX container', async () => {
-    await expect(rememberVault({ name: 'x', encrypted: new TextEncoder().encode('plain secret').buffer, handle: null, savedAt: 1 })).rejects.toThrow()
+    await expect(rememberVault({ ...base('x', 1), encrypted: new TextEncoder().encode('plain secret').buffer })).rejects.toThrow()
+    await expect(saveRecoveryCopy({ ...base('x', 1), encrypted: new TextEncoder().encode('plain secret').buffer })).rejects.toThrow()
   })
 
-  it("a recovery copy of vault B never overwrites vault A's, and pending copies are offered first", async () => {
-    await forgetVault()
-    await rememberVault({ name: 'A.kdbx', encrypted: kdbx(1), handle: null, savedAt: 1, pendingChanges: true })
-    await rememberVault({ name: 'B.kdbx', encrypted: kdbx(2), handle: null, savedAt: 3 })
-    expect((await loadRememberedVault())?.name).toBe('A.kdbx')
-    await rememberVault({ name: 'B.kdbx', encrypted: kdbx(3), handle: null, savedAt: 4, pendingChanges: true })
-    await rememberVault({ name: 'A.kdbx', encrypted: kdbx(4), handle: null, savedAt: 5 }) // A saved
-    expect((await loadRememberedVault())?.name).toBe('B.kdbx')
-    await forgetVault('B.kdbx')
-    expect((await loadRememberedVault())?.name).toBe('A.kdbx')
-    await forgetVault()
+  it('recovery copies have unique keys: same-named vaults never overwrite each other', async () => {
+    const a = await saveRecoveryCopy(base('X.kdbx', 1))
+    const b = await saveRecoveryCopy(base('X.kdbx', 2)) // another vault with the same file name
+    expect(a).not.toBe(b)
+    await rememberVault(base('X.kdbx', 3)) // normal copy of a same-named file opened from disk
+    const first = await loadRememberedVault()
+    expect(first?.pendingChanges).toBe(true)
+    expect(first?.key).toBe(b)
+    await forgetVault(b)
+    expect((await loadRememberedVault())?.key).toBe(a) // A's recovery copy survived everything
+  })
+
+  it('re-saving a recovery copy with its own key replaces only that copy', async () => {
+    const a = await saveRecoveryCopy(base('A.kdbx', 1))
+    const other = await saveRecoveryCopy(base('B.kdbx', 2))
+    expect(await saveRecoveryCopy(base('A.kdbx', 5), a)).toBe(a)
+    await forgetVault(a)
+    expect((await loadRememberedVault())?.key).toBe(other)
+  })
+
+  it('remember OFF (forgetNonPendingVaults) keeps recovery copies; forgetNormalCopy keeps them too', async () => {
+    const p = await saveRecoveryCopy(base('P.kdbx', 1))
+    await rememberVault(base('N.kdbx', 2))
+    await rememberVault(base('P.kdbx', 3))
+    await forgetNormalCopy('P.kdbx')
+    await forgetNonPendingVaults()
+    const left = await loadRememberedVault()
+    expect(left?.key).toBe(p)
+    await forgetVault(p)
     expect(await loadRememberedVault()).toBeNull()
   })
-})
 
-describe('legacy single-record layout', () => {
-  it("migrates the old 'recent' record to a per-vault record", async () => {
-    await forgetVault()
+  it("migrates the legacy 'recent' record", async () => {
     const db = await new Promise<IDBDatabase>((resolve) => {
       const r = indexedDB.open('keyhold', 1)
       r.onsuccess = () => resolve(r.result)
     })
     await new Promise<void>((resolve) => {
       const t = db.transaction('vaults', 'readwrite')
-      t.objectStore('vaults').put({ name: 'Old.kdbx', encrypted: kdbx(9), handle: null, savedAt: 9, pendingChanges: true }, 'recent')
+      t.objectStore('vaults').put({ ...base('Old.kdbx', 9), pendingChanges: true }, 'recent')
       t.oncomplete = () => resolve()
     })
     db.close()
-    expect((await loadRememberedVault())?.name).toBe('Old.kdbx')
-    await forgetVault('Old.kdbx')
-    expect(await loadRememberedVault()).toBeNull()
-  })
-})
-
-describe('forgetNonPendingVaults', () => {
-  it('keeps unsaved recovery copies', async () => {
-    const { forgetNonPendingVaults } = await import('../src/core/storage')
-    await forgetVault()
-    await rememberVault({ name: 'P.kdbx', encrypted: kdbx(1), handle: null, savedAt: 1, pendingChanges: true })
-    await rememberVault({ name: 'N.kdbx', encrypted: kdbx(2), handle: null, savedAt: 2 })
-    await forgetNonPendingVaults()
-    expect((await loadRememberedVault())?.name).toBe('P.kdbx')
-    await forgetVault('P.kdbx')
+    const v = await loadRememberedVault()
+    expect(v?.name).toBe('Old.kdbx')
+    expect(v?.key?.startsWith('pending:')).toBe(true)
+    await forgetVault(v?.key)
     expect(await loadRememberedVault()).toBeNull()
   })
 })

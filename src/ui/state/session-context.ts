@@ -23,7 +23,7 @@ export interface SessionApi extends SessionState {
   /** An encrypted auto-lock recovery copy is being written: unlocking must wait. */
   recovering: boolean
   /** Opens an already-decrypted vault (after unlock). */
-  openDb: (db: Kdbx, fileName: string, handle: FileSystemFileHandle | null, encrypted?: ArrayBuffer, pending?: boolean, fileLastModified?: number | null) => void
+  openDb: (db: Kdbx, fileName: string, handle: FileSystemFileHandle | null, encrypted?: ArrayBuffer, recoveryKey?: string | null, fileLastModified?: number | null) => void
   /** Registers a freshly created vault; optionally writes it to disk right away. */
   adoptNewVault: (db: Kdbx, fileName: string, saveNow: boolean) => Promise<void>
   /** Runs a mutation on the vault, then flags it dirty and re-renders. */
@@ -31,8 +31,8 @@ export interface SessionApi extends SessionState {
   /** Resolves true when the file was written (or downloaded). */
   save: (forcePicker?: boolean) => Promise<boolean>
   lock: () => void
-  /** Forgets one remembered vault (by name), or all of them; `keepPending` keeps unsaved recovery copies. */
-  forgetDevice: (name?: string, keepPending?: boolean) => Promise<void>
+  /** Forgets one stored record (by storage key), or all of them; `keepPending` keeps unsaved recovery copies. */
+  forgetDevice: (key?: string, keepPending?: boolean) => Promise<void>
 }
 
 export const SessionContext = createContext<SessionApi | null>(null)

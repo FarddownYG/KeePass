@@ -1,12 +1,18 @@
 /**
- * IndexedDB persistence. ONLY the encrypted .kdbx bytes (and the optional file handle) are stored.
+ * IndexedDB persistence. ONLY encrypted .kdbx bytes (and the optional file handle) are stored.
  * Never the master password, key file, or any decrypted data.
+ *
+ * Two kinds of records, in separate key spaces so they can never overwrite each other:
+ * - `vault:<file name>`  normal copy of the last opened/saved state (only if "remember" is on);
+ * - `pending:<uuid>`     recovery copy written by auto-lock with UNSAVED changes. Unique key per copy:
+ *                         removed only by a save of the session unlocked from it, or an explicit "forget".
  */
 
 const DB_NAME = 'keyhold'
 const STORE = 'vaults'
-/** One record per vault (keyed by file name), so a recovery copy never overwrites another vault's. */
-const keyOf = (name: string): string => `vault:${name}`
+const LEGACY_KEY = 'recent'
+const normalKey = (name: string): string => `vault:${name}`
+const newPendingKey = (): string => `pending:${crypto.randomUUID()}`
 
 export interface StoredVault {
   name: string
@@ -18,6 +24,8 @@ export interface StoredVault {
   pendingChanges?: boolean
   /** lastModified of the file behind `handle` when these bytes were read/written (conflict detection). */
   fileLastModified?: number | null
+  /** Storage key (filled in when loaded). */
+  key?: string
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -42,63 +50,90 @@ async function tx<T>(mode: IDBTransactionMode, run: (store: IDBObjectStore) => I
   }
 }
 
+/** Visits every record inside ONE transaction (atomic read-modify-write). */
+async function eachRecord(mode: IDBTransactionMode, visit: (key: string, value: StoredVault, cursor: IDBCursorWithValue) => void): Promise<void> {
+  const db = await openDb()
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const t = db.transaction(STORE, mode)
+      const req = t.objectStore(STORE).openCursor()
+      req.onsuccess = () => {
+        const cursor = req.result
+        if (!cursor) return
+        visit(String(cursor.key), cursor.value as StoredVault, cursor)
+        cursor.continue()
+      }
+      t.oncomplete = () => resolve()
+      t.onerror = () => reject(t.error ?? new Error('IndexedDB error'))
+    })
+  } finally {
+    db.close()
+  }
+}
+
 const KDBX_SIGNATURE = [0x03, 0xd9, 0xa2, 0x9a]
 
-function looksEncrypted(bytes: ArrayBuffer): boolean {
+function assertEncrypted(bytes: ArrayBuffer): void {
   const head = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength))
-  return KDBX_SIGNATURE.every((b, i) => head[i] === b)
-}
-
-export async function rememberVault(v: StoredVault): Promise<void> {
   // Defensive guard: refuse anything that is not a KDBX container.
-  if (!looksEncrypted(v.encrypted)) throw new Error('refusing to store non-KDBX data')
-  await tx('readwrite', (s) => s.put(v, keyOf(v.name)))
+  if (!KDBX_SIGNATURE.every((b, i) => head[i] === b)) throw new Error('refusing to store non-KDBX data')
 }
 
-const LEGACY_KEY = 'recent'
+function strip(v: StoredVault): StoredVault {
+  const { key: _key, ...rest } = v
+  return rest
+}
 
-/** One-time migration of the single-record layout (key 'recent') to per-vault records. */
+/** Normal copy of a vault (last opened/saved state). Never a recovery copy. */
+export async function rememberVault(v: StoredVault): Promise<void> {
+  assertEncrypted(v.encrypted)
+  await tx('readwrite', (s) => s.put({ ...strip(v), pendingChanges: false }, normalKey(v.name)))
+}
+
+/** Writes an auto-lock recovery copy. Reuses `key` (the copy this session came from) or creates a new unique one. */
+export async function saveRecoveryCopy(v: StoredVault, key?: string | null): Promise<string> {
+  assertEncrypted(v.encrypted)
+  const k = key && key.startsWith('pending:') ? key : newPendingKey()
+  await tx('readwrite', (s) => s.put({ ...strip(v), pendingChanges: true }, k))
+  return k
+}
+
+/** One-time migration of the single-record layout (key 'recent'). */
 async function migrateLegacy(): Promise<void> {
   const legacy = await tx<StoredVault | undefined>('readonly', (s) => s.get(LEGACY_KEY) as IDBRequest<StoredVault | undefined>)
   if (!legacy) return
-  const current = await getRememberedVault(legacy.name)
-  // Keep whichever matters more: a pending copy wins, then the most recent.
-  const keepLegacy = !current || (legacy.pendingChanges === true && current.pendingChanges !== true) || (current.pendingChanges === legacy.pendingChanges && legacy.savedAt > current.savedAt)
-  if (keepLegacy) await tx('readwrite', (s) => s.put(legacy, keyOf(legacy.name)))
+  const target = legacy.pendingChanges === true ? newPendingKey() : normalKey(legacy.name)
+  await tx('readwrite', (s) => s.put(legacy, target))
   await tx('readwrite', (s) => s.delete(LEGACY_KEY))
 }
 
-export async function getRememberedVault(name: string): Promise<StoredVault | null> {
-  try {
-    const v = await tx<StoredVault | undefined>('readonly', (s) => s.get(keyOf(name)) as IDBRequest<StoredVault | undefined>)
-    return v ?? null
-  } catch {
-    return null
-  }
-}
-
+/** Unsaved recovery copies first (most recent), then the most recently used vault. */
 export async function loadRememberedVault(): Promise<StoredVault | null> {
   try {
     await migrateLegacy()
-    const all = await tx<StoredVault[]>('readonly', (s) => s.getAll() as IDBRequest<StoredVault[]>)
+    const all: StoredVault[] = []
+    await eachRecord('readonly', (key, value) => all.push({ ...value, key }))
     if (all.length === 0) return null
-    // Unsaved recovery copies first (most recent), then the most recently used vault.
-    const sorted = [...all].sort((a, b) => Number(b.pendingChanges === true) - Number(a.pendingChanges === true) || b.savedAt - a.savedAt)
-    return sorted[0]
+    all.sort((a, b) => Number(b.pendingChanges === true) - Number(a.pendingChanges === true) || b.savedAt - a.savedAt)
+    return all[0]
   } catch {
     return null
   }
 }
 
-/** Forgets every normal copy but keeps unsaved recovery copies (used when "remember" is switched off). */
-export async function forgetNonPendingVaults(): Promise<void> {
-  const all = await tx<StoredVault[]>('readonly', (s) => s.getAll() as IDBRequest<StoredVault[]>)
-  for (const v of all) {
-    if (v.pendingChanges !== true) await forgetVault(v.name)
-  }
+/** Forgets one record (by storage key), or EVERYTHING stored on this device when no key is given. */
+export async function forgetVault(key?: string): Promise<void> {
+  await tx('readwrite', (s) => (key === undefined ? s.clear() : s.delete(key)))
 }
 
-/** Forgets one vault (by name), or every vault stored on this device when no name is given. */
-export async function forgetVault(name?: string): Promise<void> {
-  await tx('readwrite', (s) => (name === undefined ? s.clear() : s.delete(keyOf(name))))
+/** Forgets the normal copy of a vault (its recovery copies are untouched). */
+export async function forgetNormalCopy(name: string): Promise<void> {
+  await forgetVault(normalKey(name))
+}
+
+/** Forgets every normal copy, atomically, keeping unsaved recovery copies ("remember" switched off). */
+export async function forgetNonPendingVaults(): Promise<void> {
+  await eachRecord('readwrite', (key, _value, cursor) => {
+    if (!key.startsWith('pending:')) cursor.delete()
+  })
 }

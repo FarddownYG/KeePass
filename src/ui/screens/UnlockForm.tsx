@@ -55,7 +55,7 @@ export function UnlockForm({ target, onOpenOther, onCreate, onForget, onBack }: 
       }
       const db = await openVault(bytes.slice(0), { password, keyFile: keyFile?.bytes ?? null })
       setPassword('')
-      openDb(db, target.name, target.handle, fresh ? bytes : undefined, target.pending === true, lastModified)
+      openDb(db, target.name, target.handle, fresh ? bytes : undefined, target.pending === true ? (target.key ?? null) : null, lastModified)
     } catch (err) {
       setError(err instanceof VaultError ? err.message : "Impossible d'ouvrir la base.")
       setBusy(false)
