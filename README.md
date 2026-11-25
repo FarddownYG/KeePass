@@ -106,6 +106,8 @@ Gates (revue de sécurité indépendante effectuée ; tous les findings critique
 
 ## Déploiement (Vercel)
 
+En ligne : **https://keepass-nine.vercel.app** (domaine de production du projet Vercel `keepass`, déployé automatiquement à chaque push sur `main`).
+
 Projet Vercel relié au dépôt GitHub, framework « Vite », commande `npm run build`, sortie `dist`. Les en-têtes de sécurité viennent de `vercel.json`.
 
 ## Licences et crédits
