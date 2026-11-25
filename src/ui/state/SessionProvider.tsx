@@ -158,7 +158,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         const res = await saveVaultFile(bytes, { handle, suggestedName: fileName, forcePicker, expectedLastModified })
         if (res.method === 'cancelled') return false
         if (res.method === 'conflict') {
-          toast('Le fichier a été modifié ailleurs depuis son ouverture. Rien n’a été écrasé : utilisez « Enregistrer sous… ».', 'error')
+          toast(
+            res.reason === 'changed'
+              ? 'Le fichier a été modifié ailleurs depuis son ouverture. Rien n’a été écrasé : utilisez « Enregistrer sous… ».'
+              : 'Impossible de vérifier que le fichier n’a pas changé (accès refusé ?). Rien n’a été écrasé : utilisez « Enregistrer sous… ».',
+            'error',
+          )
           return false
         }
         const newLastModified = res.method === 'handle' ? res.lastModified : null

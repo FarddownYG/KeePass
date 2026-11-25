@@ -81,8 +81,8 @@ export type SaveResult =
   | { method: 'handle'; handle: FileSystemFileHandle; lastModified: number | null }
   | { method: 'download' }
   | { method: 'cancelled' }
-  /** The file on disk changed since it was opened (another app / sync): nothing was written. */
-  | { method: 'conflict' }
+  /** Nothing was written: the file changed since it was opened (another app / sync), or its state could not be verified. */
+  | { method: 'conflict'; reason: 'changed' | 'unverifiable' }
 
 async function lastModifiedOf(handle: FileSystemFileHandle): Promise<number | null> {
   try {
@@ -124,7 +124,8 @@ export async function saveVaultFile(
     if (!(await ensureWritePermission(opts.handle))) return { method: 'cancelled' }
     const current = await lastModifiedOf(opts.handle)
     // Fail closed: unknown baseline, unreadable or changed file → never overwrite.
-    if (expected === null || current === null || current !== expected) return { method: 'conflict' }
+    if (expected === null || current === null) return { method: 'conflict', reason: 'unverifiable' }
+    if (current !== expected) return { method: 'conflict', reason: 'changed' }
     if (await writeHandle(opts.handle, bytes)) {
       return { method: 'handle', handle: opts.handle, lastModified: await lastModifiedOf(opts.handle) }
     }

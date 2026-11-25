@@ -39,14 +39,14 @@ describe('save conflict detection', () => {
   it('refuses to overwrite a file modified elsewhere', async () => {
     const { handle, written } = fakeHandle({ lastModified: 200 })
     const res = await saveVaultFile(bytes, { handle, suggestedName: 'v.kdbx', expectedLastModified: 100 })
-    expect(res.method).toBe('conflict')
+    expect(res).toEqual({ method: 'conflict', reason: 'changed' })
     expect(written).toHaveLength(0)
   })
 
   it('fails closed when the baseline date is unknown', async () => {
     const { handle, written } = fakeHandle({ lastModified: 100 })
     const res = await saveVaultFile(bytes, { handle, suggestedName: 'v.kdbx', expectedLastModified: null })
-    expect(res.method).toBe('conflict')
+    expect(res).toEqual({ method: 'conflict', reason: 'unverifiable' })
     expect(written).toHaveLength(0)
   })
 
