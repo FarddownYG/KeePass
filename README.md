@@ -82,6 +82,11 @@ La CSP n'a **aucune** exception : ni `'unsafe-inline'`, ni `'unsafe-eval'`, ni `
 - Les fichiers KDBX 3.1 s'ouvrent et se réenregistrent dans leur format d'origine.
 - `kdbxweb` : dernière version npm 2.1.1 (2021), non maintenue activement (dépôt modifié pour la dernière fois en 2024) ; c'est pourtant la seule implémentation KDBX 4 JavaScript éprouvée (KeeWeb). Ses dépendances Node (`@xmldom/xmldom`, `crypto`) sont remplacées par des stubs dans le bundle navigateur : le `DOMParser` natif et WebCrypto sont utilisés (y compris en test, Node 22 exposant `crypto.subtle`). Dépendances runtime épinglées en version exacte. `npm audit --omit=dev` : 0 vulnérabilité (4 modérées en dev, via workbox-build, outil de build uniquement).
 
+## Décisions de conception validées
+
+- **HIBP** : vérification automatique sur la valeur **complète** (sortie du champ, insertion d'un mot de passe généré), jamais pendant la frappe — préserver la k-anonymity prime sur la réactivité.
+- **Mot de passe maître** : champ `type="password"` conservé (le navigateur peut proposer de l'enregistrer, refusable) plutôt qu'un champ texte masqué par CSS, qui exposerait le mot de passe au dictionnaire du clavier mobile.
+
 ## Compatibilité vérifiée
 
 Tests automatisés (`tests/kdbx-fixtures.test.ts`) :
