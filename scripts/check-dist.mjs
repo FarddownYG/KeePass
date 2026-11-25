@@ -41,7 +41,11 @@ function stringTokens(js) {
   parse(js, { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true, onToken: tokens })
   for (const t of tokens) {
     if (t.type.label === 'string') out.push({ value: String(t.value), start: t.start })
-    else if (t.type.label === 'template' && typeof t.value === 'string') out.push({ value: t.value, start: t.start })
+    else if (t.type.label === 'template' || t.type.label === 'invalidTemplate') {
+      // Cooked value AND raw source (String.raw`...` exposes the raw form; invalid templates have no cooked value).
+      if (typeof t.value === 'string') out.push({ value: t.value, start: t.start })
+      out.push({ value: js.slice(t.start, t.end), start: t.start })
+    }
     // Regex literals can be turned into strings (.source): scan their pattern too (\/ unescaped).
     else if (t.type.label === 'regexp' && t.value && typeof t.value.pattern === 'string') out.push({ value: t.value.pattern.replace(/\\\//g, '/'), start: t.start })
   }
