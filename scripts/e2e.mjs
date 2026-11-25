@@ -201,6 +201,14 @@ try {
     const ctx4 = await browser.newContext()
     const p4 = await ctx4.newPage()
     monitor(p4)
+    // From the first load: a request leaving the app origin would be a leak (offline, everything comes from the SW cache).
+    p4.on('request', (req) => {
+      const u = req.url()
+      if (u.startsWith('http://localhost:4175/')) return
+      // HIBP is the only allowed third party: validated below like every other HIBP request.
+      if (u.startsWith('https://api.pwnedpasswords.com/range/')) hibp.push({ url: u, headers: req.headers(), body: req.postData() })
+      else external.push(u)
+    })
     await p4.addInitScript(() => {
       delete window.showSaveFilePicker
       delete window.showOpenFilePicker
@@ -211,14 +219,6 @@ try {
     })
     await p4.reload() // now controlled by the service worker
     await p4.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 15000 })
-    // Offline: a request leaving the app origin would be a leak (everything must come from the SW cache).
-    p4.on('request', (req) => {
-      const u = req.url()
-      if (u.startsWith('http://localhost:4175/')) return
-      // HIBP is the only allowed third party: validated below like every other HIBP request.
-      if (u.startsWith('https://api.pwnedpasswords.com/range/')) hibp.push({ url: u, headers: req.headers(), body: req.postData() })
-      else external.push(u)
-    })
     await ctx4.setOffline(true)
     await p4.reload()
     await p4.getByRole('button', { name: /Créer un coffre/ }).click()
