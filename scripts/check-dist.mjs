@@ -25,7 +25,8 @@ const stripC0 = (v) => {
   while (k < v.length && v.charCodeAt(k) <= 0x20) k++
   return v.slice(k)
 }
-const normalise = (v) => stripC0(v).replace(/\\/g, '/')
+// WHATWG URL parsing also removes ASCII tab/LF/CR ANYWHERE in the input.
+const normalise = (v) => stripC0(v).replace(/[\t\n\r]/g, '').replace(/\\/g, '/')
 // Network-capable references: '//host', 'scheme://host' or bare 'http(s):/ws(s):/ftp:' (e.g. 'https:evil.com').
 // Non-URL identifiers like 'workbox:core:7.4.0' are not network schemes.
 const isExternal = (v) => {
@@ -38,6 +39,8 @@ function stringTokens(js) {
   for (const t of tokenizer(js, { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true })) {
     if (t.type.label === 'string') out.push({ value: String(t.value), start: t.start })
     else if (t.type.label === 'template' && typeof t.value === 'string') out.push({ value: t.value, start: t.start })
+    // Regex literals can be turned into strings (.source): scan their pattern too (\/ unescaped).
+    else if (t.type.label === 'regexp' && t.value && typeof t.value.pattern === 'string') out.push({ value: t.value.pattern.replace(/\\\//g, '/'), start: t.start })
   }
   return out
 }
@@ -57,7 +60,7 @@ for (const name of readdirSync(DIST).filter((n) => n === 'sw.js' || /^workbox-.*
     if (isExternal(value)) errors.push(`${name}: external URL in string ${JSON.stringify(value)}`)
   }
   // 2) Precache entries ({url:"..."}): strict allowlist of plain relative paths (doc link not accepted here).
-  for (const m of js.matchAll(/url:\s*(?=["'`])/g)) {
+  for (const m of js.matchAll(/(?:\burl|["'`]url["'`])\s*:\s*(?=["'`])/g)) {
     const tok = strings.find((s) => s.start === m.index + m[0].length)
     const u = tok ? normalise(tok.value) : ''
     if (!/^[\w.-][\w./-]*$/.test(u) || u.includes('//')) errors.push(`${name}: precache URL not a plain relative path: ${tok ? tok.value : '?'}`)
