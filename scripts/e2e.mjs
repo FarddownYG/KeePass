@@ -44,6 +44,13 @@ try {
     if (/Content Security Policy|Refused to/i.test(m.text())) cspErrors.push(m.text())
   })
   page.on('pageerror', (e) => cspErrors.push(String(e)))
+  /** Collect CSP violations / page errors on every page used by the run. */
+  const monitor = (pg) => {
+    pg.on('console', (m) => {
+      if (/Content Security Policy|Refused to/i.test(m.text())) cspErrors.push(m.text())
+    })
+    pg.on('pageerror', (e) => cspErrors.push(String(e)))
+  }
   await page.route('**/*', (route) => {
     const u = route.request().url()
     if (u.startsWith('http://localhost:4175/')) return route.continue()
@@ -109,21 +116,25 @@ try {
   for (const secret of [master, 'entry-secret-XYZ']) {
     if (storage.ls.includes(secret) || storage.title.includes(secret) || storage.href.includes(secret)) fail(`secret leaked to storage/title/url`)
   }
-  for (const r of hibp) {
-    if (!/\/range\/[0-9A-F]{5}$/.test(r.url)) fail(`bad HIBP URL ${r.url}`)
-    if (r.body) fail('HIBP request has a body')
-    if (r.headers['add-padding'] !== 'true') fail('missing Add-Padding header')
-    if (JSON.stringify(r).includes(master) || JSON.stringify(r).includes('entry-secret-XYZ')) fail('secret in HIBP request')
-  }
   // ---- Phase 2: real round-trip through the downloaded file, in a FRESH browser profile ----
   {
     const ctx2 = await browser.newContext()
     const p2 = await ctx2.newPage()
+    monitor(p2)
     await p2.addInitScript(() => {
       delete window.showSaveFilePicker
       delete window.showOpenFilePicker
     })
-    await p2.route('**/*', (route) => (route.request().url().startsWith('http://localhost:4175/') ? route.continue() : route.abort()))
+    await p2.route('**/*', (route) => {
+      const u = route.request().url()
+      if (u.startsWith('http://localhost:4175/')) return route.continue()
+      if (u.startsWith('https://api.pwnedpasswords.com/range/')) {
+        hibp.push({ url: u, headers: route.request().headers(), body: route.request().postData() })
+        return route.fulfill({ status: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' }, body: 'AAAAA:0\n' })
+      }
+      external.push(u)
+      return route.abort()
+    })
     await p2.goto('http://localhost:4175/')
     const chooser = p2.waitForEvent('filechooser')
     await p2.getByRole('button', { name: /Ouvrir un fichier/ }).click()
@@ -189,6 +200,7 @@ try {
   {
     const ctx4 = await browser.newContext()
     const p4 = await ctx4.newPage()
+    monitor(p4)
     await p4.addInitScript(() => {
       delete window.showSaveFilePicker
       delete window.showOpenFilePicker
@@ -199,6 +211,14 @@ try {
     })
     await p4.reload() // now controlled by the service worker
     await p4.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 15000 })
+    // Offline: a request leaving the app origin would be a leak (everything must come from the SW cache).
+    p4.on('request', (req) => {
+      const u = req.url()
+      if (u.startsWith('http://localhost:4175/')) return
+      // HIBP is the only allowed third party: validated below like every other HIBP request.
+      if (u.startsWith('https://api.pwnedpasswords.com/range/')) hibp.push({ url: u, headers: req.headers(), body: req.postData() })
+      else external.push(u)
+    })
     await ctx4.setOffline(true)
     await p4.reload()
     await p4.getByRole('button', { name: /Créer un coffre/ }).click()
@@ -218,12 +238,22 @@ try {
   {
     const ctx5 = await browser.newContext()
     const p5 = await ctx5.newPage()
+    monitor(p5)
     await p5.addInitScript(() => {
       const handle = async () => (await navigator.storage.getDirectory()).getFileHandle('vault.kdbx', { create: true })
       window.showSaveFilePicker = async () => handle()
       window.showOpenFilePicker = async () => [await handle()]
     })
-    await p5.route('**/*', (route) => (route.request().url().startsWith('http://localhost:4175/') ? route.continue() : route.abort()))
+    await p5.route('**/*', (route) => {
+      const u = route.request().url()
+      if (u.startsWith('http://localhost:4175/')) return route.continue()
+      if (u.startsWith('https://api.pwnedpasswords.com/range/')) {
+        hibp.push({ url: u, headers: route.request().headers(), body: route.request().postData() })
+        return route.fulfill({ status: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' }, body: 'AAAAA:0\n' })
+      }
+      external.push(u)
+      return route.abort()
+    })
     let downloads = 0
     p5.on('download', () => downloads++)
     const readFile = () =>
@@ -272,13 +302,30 @@ try {
     await p5.getByRole('button', { name: /Verrouiller/ }).first().click()
     const discard = p5.getByRole('button', { name: /sans enregistrer/i })
     if (await discard.count()) await discard.first().click()
+    // Replace the file ON DISK with a different vault (phase 1 download: contains "E2E entry", not "FSA entry").
+    // If unlock re-reads the file through the handle, we must see that vault, not the IndexedDB copy.
+    const otherVault = Array.from(readFileSync(savedPath))
+    await p5.evaluate(async (bytes) => {
+      const h = await (await navigator.storage.getDirectory()).getFileHandle('vault.kdbx')
+      const w = await h.createWritable()
+      await w.write(new Uint8Array(bytes))
+      await w.close()
+    }, otherVault)
     await p5.getByLabel('Mot de passe maître').fill(master)
     await p5.locator('form button[type=submit]').click()
-    await p5.getByText('FSA entry').first().waitFor({ timeout: 20000 }).catch(() => fail('FSA: reopen through handle failed'))
+    await p5.getByText('E2E entry').first().waitFor({ timeout: 20000 }).catch(() => fail('FSA: unlock did not re-read the current file through the handle'))
+    if (await p5.getByText('FSA entry').count()) fail('FSA: stale IndexedDB copy opened instead of the file on disk')
+    if (await p5.getByText('Unsaved entry').count()) fail('FSA: refused (conflicting) changes leaked into the reopened vault')
     if (downloads !== 0) fail(`FSA path must not fall back to downloads (${downloads})`)
     await ctx5.close()
   }
 
+  for (const r of hibp) {
+    if (!/\/range\/[0-9A-F]{5}$/.test(r.url)) fail(`bad HIBP URL ${r.url}`)
+    if (r.body) fail('HIBP request has a body')
+    if (r.headers['add-padding'] !== 'true') fail('missing Add-Padding header')
+    if (JSON.stringify(r).includes(master) || JSON.stringify(r).includes('entry-secret-XYZ')) fail('secret in HIBP request')
+  }
   if (storage.idb.length !== 1) fail(`expected 1 encrypted IndexedDB record, got ${storage.idb.length}`)
   if (external.length) fail(`requests to other origins: ${external.join(', ')}`)
   if (cspErrors.length) fail(`CSP/page errors: ${cspErrors.join(' | ')}`)
