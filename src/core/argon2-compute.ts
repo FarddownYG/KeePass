@@ -18,6 +18,7 @@ export interface Argon2Request {
  * Used directly in tests and inside the dedicated worker in the browser.
  */
 export async function computeArgon2(req: Argon2Request): Promise<Uint8Array> {
-  const opts = { m: req.memoryKiB, t: req.iterations, p: req.parallelism, dkLen: req.length, version: req.version }
+  // maxmem raised from noble's 1 GiB default: KeePass allows larger memory costs (the browser may still refuse).
+  const opts = { m: req.memoryKiB, t: req.iterations, p: req.parallelism, dkLen: req.length, version: req.version, maxmem: 2 ** 32 - 1 }
   return req.type === 2 ? argon2id(req.password, req.salt, opts) : argon2d(req.password, req.salt, opts)
 }
