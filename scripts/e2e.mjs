@@ -185,10 +185,104 @@ try {
     else if (JSON.stringify(after[0].bytes) !== JSON.stringify(downloaded)) fail('recovery copy not refreshed with the downloaded bytes')
   }
 
+  // ---- Phase 4: PWA works OFFLINE (service worker precache, Argon2 worker included) ----
+  {
+    const ctx4 = await browser.newContext()
+    const p4 = await ctx4.newPage()
+    await p4.addInitScript(() => {
+      delete window.showSaveFilePicker
+      delete window.showOpenFilePicker
+    })
+    await p4.goto('http://localhost:4175/')
+    await p4.evaluate(async () => {
+      await navigator.serviceWorker.ready
+    })
+    await p4.reload() // now controlled by the service worker
+    await p4.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 15000 })
+    await ctx4.setOffline(true)
+    await p4.reload()
+    await p4.getByRole('button', { name: /Créer un coffre/ }).click()
+    await p4.getByLabel('Mot de passe maître').fill(master)
+    await p4.getByLabel('Confirmer le mot de passe').fill(master)
+    await p4.getByLabel(/Enregistrer le fichier tout de suite/).uncheck()
+    await p4.locator('form button[type=submit]').click()
+    await p4
+      .getByRole('button', { name: /Nouvelle entrée|Ajouter/ })
+      .first()
+      .waitFor({ timeout: 30000 })
+      .catch(() => fail('offline: app or Argon2 worker unavailable without network'))
+    await ctx4.close()
+  }
+
+  // ---- Phase 5: File System Access API path with REAL FileSystemFileHandles (OPFS-backed pickers) ----
+  {
+    const ctx5 = await browser.newContext()
+    const p5 = await ctx5.newPage()
+    await p5.addInitScript(() => {
+      const handle = async () => (await navigator.storage.getDirectory()).getFileHandle('vault.kdbx', { create: true })
+      window.showSaveFilePicker = async () => handle()
+      window.showOpenFilePicker = async () => [await handle()]
+    })
+    await p5.route('**/*', (route) => (route.request().url().startsWith('http://localhost:4175/') ? route.continue() : route.abort()))
+    let downloads = 0
+    p5.on('download', () => downloads++)
+    const readFile = () =>
+      p5.evaluate(async () => {
+        const f = await (await (await navigator.storage.getDirectory()).getFileHandle('vault.kdbx')).getFile()
+        return { size: f.size, lastModified: f.lastModified, sig: Array.from(new Uint8Array(await f.slice(0, 4).arrayBuffer()), (x) => x.toString(16).padStart(2, '0')).join('') }
+      })
+    await p5.goto('http://localhost:4175/')
+    await p5.getByRole('button', { name: /Créer un coffre/ }).click()
+    await p5.getByLabel('Mot de passe maître').fill(master)
+    await p5.getByLabel('Confirmer le mot de passe').fill(master)
+    await p5.locator('form button[type=submit]').click() // "save now" -> save picker -> handle
+    await p5.getByRole('button', { name: /Nouvelle entrée|Ajouter/ }).first().waitFor({ timeout: 30000 })
+    await p5.waitForTimeout(3000)
+    const first = await readFile()
+    if (first.sig !== '03d9a29a') fail(`FSA: file not written through the handle (${first.sig})`)
+    await p5.getByRole('button', { name: /Nouvelle entrée|Ajouter/ }).first().click()
+    await p5.getByLabel('Titre').fill('FSA entry')
+    await p5.locator('form button[type=submit]').click()
+    await p5.keyboard.press('Control+s')
+    // Poll the real file until the in-place write lands (Argon2 in pure JS: save + verification take a few seconds).
+    let second = await readFile()
+    for (let i = 0; i < 40 && second.lastModified === first.lastModified && second.size === first.size; i++) {
+      await p5.waitForTimeout(500)
+      second = await readFile()
+    }
+    if (second.size === first.size && second.lastModified === first.lastModified) fail('FSA: file unchanged after save')
+    // External modification (another app / sync), then save -> must be refused, file untouched.
+    await p5.waitForTimeout(50)
+    await p5.evaluate(async () => {
+      const h = await (await navigator.storage.getDirectory()).getFileHandle('vault.kdbx')
+      const bytes = await (await h.getFile()).arrayBuffer()
+      const w = await h.createWritable()
+      await w.write(bytes)
+      await w.close()
+    })
+    const external = await readFile()
+    await p5.getByRole('button', { name: /Nouvelle entrée|Ajouter/ }).first().click()
+    await p5.getByLabel('Titre').fill('Unsaved entry')
+    await p5.locator('form button[type=submit]').click()
+    await p5.keyboard.press('Control+s')
+    await p5.getByText(/modifié ailleurs/).first().waitFor({ timeout: 20000 }).catch(() => fail('FSA: external modification not detected'))
+    const afterConflict = await readFile()
+    if (afterConflict.lastModified !== external.lastModified || afterConflict.size !== external.size) fail('FSA: file overwritten despite conflict')
+    // Lock, then unlock the remembered vault: the current file is re-read through the handle.
+    await p5.getByRole('button', { name: /Verrouiller/ }).first().click()
+    const discard = p5.getByRole('button', { name: /sans enregistrer/i })
+    if (await discard.count()) await discard.first().click()
+    await p5.getByLabel('Mot de passe maître').fill(master)
+    await p5.locator('form button[type=submit]').click()
+    await p5.getByText('FSA entry').first().waitFor({ timeout: 20000 }).catch(() => fail('FSA: reopen through handle failed'))
+    if (downloads !== 0) fail(`FSA path must not fall back to downloads (${downloads})`)
+    await ctx5.close()
+  }
+
   if (storage.idb.length !== 1) fail(`expected 1 encrypted IndexedDB record, got ${storage.idb.length}`)
   if (external.length) fail(`requests to other origins: ${external.join(', ')}`)
   if (cspErrors.length) fail(`CSP/page errors: ${cspErrors.join(' | ')}`)
-  if (!process.exitCode) process.stdout.write(`e2e: OK (HIBP: prefix-only, ${hibp.length} req, none while typing; IndexedDB: encrypted only; download round-trip + wrong password OK; auto-lock recovery + refresh OK; external: 0; CSP violations: 0)\n`)
+  if (!process.exitCode) process.stdout.write(`e2e: OK (HIBP: prefix-only, ${hibp.length} req, none while typing; IndexedDB: encrypted only; download round-trip + wrong password OK; auto-lock recovery + refresh OK; offline PWA OK; File System Access (write in place, conflict refused, reopen) OK; external: 0; CSP violations: 0)\n`)
 } finally {
   await browser.close()
   server.close()
