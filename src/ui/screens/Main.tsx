@@ -164,7 +164,7 @@ export function Main() {
         </section>
       ) : (
         <>
-          <section className={`h-full min-h-0 border-r border-line ${detailOpen ? 'hidden lg:block' : ''}`} aria-label="Liste des entrées">
+          <section className={`h-full min-h-0 border-line lg:border-r ${detailOpen ? 'hidden lg:block' : ''}`} aria-label="Liste des entrées">
             <EntryList
               title={listTitle}
               entries={entries}
