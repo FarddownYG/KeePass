@@ -197,7 +197,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           s.db === db ? { ...s, handle: newHandle, fileName: newName, fileLastModified: newLastModified, dirty: s.rev !== revAtStart } : s,
         )
         lastPersistedRef.current = { id: vaultId(db), rev: revAtStart, lastModified: newLastModified }
-        // A download may be blocked or discarded by the browser: keep the recovery copy in that case.
+        // A download may be blocked or discarded by the browser: keep the recovery copy in that case,
+        // refreshed with the bytes just saved so it is never older than the last download.
+        if (res.method === 'download' && recoveryKey) {
+          await saveRecoveryCopy({ name: newName, encrypted: bytes, handle: newHandle, savedAt: Date.now(), fileLastModified: newLastModified }, recoveryKey).catch(() => undefined)
+        }
         await remember('save', newName, bytes, newHandle, newLastModified, res.method === 'handle' ? recoveryKey : null)
         toast(res.method === 'download' ? 'Fichier téléchargé' : 'Enregistré')
         ok = true

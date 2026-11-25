@@ -99,19 +99,20 @@ export async function saveRecoveryCopy(v: StoredVault, key?: string | null): Pro
   return k
 }
 
-/** One-time migration of the single-record layout (key 'recent'). */
+/** One-time migration of the single-record layout (key 'recent'): read + move + delete in ONE transaction. */
 async function migrateLegacy(): Promise<void> {
-  const legacy = await tx<StoredVault | undefined>('readonly', (s) => s.get(LEGACY_KEY) as IDBRequest<StoredVault | undefined>)
-  if (!legacy) return
-  const target = legacy.pendingChanges === true ? newPendingKey() : normalKey(legacy.name)
-  // Move in ONE transaction: no duplicate copy if the deletion failed.
   const db = await openDb()
   try {
     await new Promise<void>((resolve, reject) => {
       const t = db.transaction(STORE, 'readwrite')
       const store = t.objectStore(STORE)
-      store.put(legacy, target)
-      store.delete(LEGACY_KEY)
+      const req = store.get(LEGACY_KEY)
+      req.onsuccess = () => {
+        const legacy = req.result as StoredVault | undefined
+        if (!legacy) return
+        store.put(legacy, legacy.pendingChanges === true ? newPendingKey() : normalKey(legacy.name))
+        store.delete(LEGACY_KEY)
+      }
       t.oncomplete = () => resolve()
       t.onerror = () => reject(t.error ?? new Error('IndexedDB error'))
       t.onabort = () => reject(t.error ?? new Error('IndexedDB transaction aborted'))
