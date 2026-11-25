@@ -37,7 +37,8 @@
       {
         "allow": [
           "**/*.css",
-          "@fontsource-variable/*"
+          "@fontsource-variable/*",
+          "fake-indexeddb/auto"
         ]
       }
     ]
