@@ -65,3 +65,15 @@ describe('IndexedDB storage', () => {
     expect(await loadRememberedVault()).toBeNull()
   })
 })
+
+describe('refreshRecoveryCopy', () => {
+  it('updates an existing copy in place and never resurrects a forgotten one', async () => {
+    const { refreshRecoveryCopy } = await import('../src/core/storage')
+    const k = await saveRecoveryCopy(base('R.kdbx', 1))
+    expect(await refreshRecoveryCopy(k, base('R.kdbx', 7))).toBe(true)
+    expect((await loadRememberedVault())?.savedAt).toBe(7)
+    await forgetVault(k)
+    expect(await refreshRecoveryCopy(k, base('R.kdbx', 8))).toBe(false)
+    expect(await loadRememberedVault()).toBeNull()
+  })
+})

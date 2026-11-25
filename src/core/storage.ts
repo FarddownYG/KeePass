@@ -91,6 +91,18 @@ export async function rememberVault(v: StoredVault): Promise<void> {
   await tx('readwrite', (s) => s.put({ ...strip(v), pendingChanges: false }, normalKey(v.name)))
 }
 
+/** Replaces an EXISTING recovery copy in place (no-op if it was forgotten meanwhile, e.g. from another tab). */
+export async function refreshRecoveryCopy(key: string, v: StoredVault): Promise<boolean> {
+  assertEncrypted(v.encrypted)
+  let found = false
+  await eachRecord('readwrite', (k, _value, cursor) => {
+    if (k !== key) return
+    found = true
+    cursor.update({ ...strip(v), pendingChanges: true })
+  })
+  return found
+}
+
 /** Writes an auto-lock recovery copy. Reuses `key` (the copy this session came from) or creates a new unique one. */
 export async function saveRecoveryCopy(v: StoredVault, key?: string | null): Promise<string> {
   assertEncrypted(v.encrypted)

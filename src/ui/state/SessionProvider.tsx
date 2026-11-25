@@ -4,7 +4,7 @@ import { clearClipboardNow } from '../../core/clipboard'
 import { saveVaultFile } from '../../core/files'
 import { clearHibpCache } from '../../core/hibp'
 import { loadSettings, saveSettings, type Settings } from '../../core/settings'
-import { clearAllVaults, forgetNonPendingVaults, forgetNormalCopy, forgetVault, loadRememberedVault, rememberVault, saveRecoveryCopy, type StoredVault } from '../../core/storage'
+import { clearAllVaults, forgetNonPendingVaults, forgetNormalCopy, forgetVault, loadRememberedVault, refreshRecoveryCopy, rememberVault, saveRecoveryCopy, type StoredVault } from '../../core/storage'
 import { saveVault, type Kdbx } from '../../core/vault'
 import { SessionContext, type SessionApi, type SessionState } from './session-context'
 import { useToast } from './toast-context'
@@ -200,7 +200,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         // A download may be blocked or discarded by the browser: keep the recovery copy in that case,
         // refreshed with the bytes just saved so it is never older than the last download.
         if (res.method === 'download' && recoveryKey) {
-          await saveRecoveryCopy({ name: newName, encrypted: bytes, handle: newHandle, savedAt: Date.now(), fileLastModified: newLastModified }, recoveryKey).catch(() => undefined)
+          try {
+            await refreshRecoveryCopy(recoveryKey, { name: newName, encrypted: bytes, handle: newHandle, savedAt: Date.now(), fileLastModified: newLastModified })
+          } catch {
+            toast('La copie de récupération de cet appareil n’a pas pu être mise à jour (espace insuffisant ?).', 'error')
+          }
         }
         await remember('save', newName, bytes, newHandle, newLastModified, res.method === 'handle' ? recoveryKey : null)
         toast(res.method === 'download' ? 'Fichier téléchargé' : 'Enregistré')
