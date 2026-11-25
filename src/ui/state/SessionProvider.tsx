@@ -96,11 +96,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         }
         return
       }
+      // Never overwrite the auto-lock recovery copy of ANOTHER vault: its unsaved changes would be lost.
+      const stored = await loadRememberedVault()
+      if (stored?.pendingChanges && stored.name !== name) {
+        toast(`Modifications non enregistrées de « ${stored.name} » conservées sur cet appareil : ce coffre n’est pas mémorisé.`)
+        return
+      }
       await rememberVault({ name, encrypted, handle, savedAt: Date.now(), fileLastModified })
     } catch {
       // IndexedDB unavailable (private window…): the vault simply is not remembered.
     }
-  }, [])
+  }, [toast])
 
   const openDb = useCallback(
     (db: Kdbx, fileName: string, handle: FileSystemFileHandle | null, encrypted?: ArrayBuffer, pending = false, fileLastModified: number | null = null): void => {
@@ -143,14 +149,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     async (db: Kdbx, handle: FileSystemFileHandle | null, fileName: string, forcePicker: boolean, startRev?: number): Promise<boolean> => {
       setSaving(true)
       const revAtStart = startRev ?? stateRef.current.rev
+      // Captured synchronously: a lock during the (multi-second) save must not erase it.
+      const openedLastModified = stateRef.current.db === db ? stateRef.current.fileLastModified : null
+      const previous = inFlightRef.current
       let done: (v: boolean) => void = () => undefined
-      inFlightRef.current = new Promise<boolean>((r) => {
+      const mine = new Promise<boolean>((r) => {
         done = r
       })
+      inFlightRef.current = mine
       let ok = false
       try {
+        // Saves of the session run one after another, so each sees the file date written by the previous one.
+        if (previous) await previous
         const bytes = await saveVault(db)
-        const expectedLastModified = stateRef.current.db === db ? stateRef.current.fileLastModified : null
+        const last = lastPersistedRef.current
+        const expectedLastModified = last !== null && last.id === vaultId(db) ? last.lastModified : openedLastModified
         const res = await saveVaultFile(bytes, { handle, suggestedName: fileName, forcePicker, expectedLastModified })
         if (res.method === 'cancelled') return false
         if (res.method === 'conflict') {
@@ -174,7 +187,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       } finally {
         setSaving(false)
         done(ok)
-        inFlightRef.current = null
+        if (inFlightRef.current === mine) inFlightRef.current = null
       }
     },
     [remember, toast],

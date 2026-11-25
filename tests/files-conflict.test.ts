@@ -43,6 +43,13 @@ describe('save conflict detection', () => {
     expect(written).toHaveLength(0)
   })
 
+  it('fails closed when the baseline date is unknown', async () => {
+    const { handle, written } = fakeHandle({ lastModified: 100 })
+    const res = await saveVaultFile(bytes, { handle, suggestedName: 'v.kdbx', expectedLastModified: null })
+    expect(res.method).toBe('conflict')
+    expect(written).toHaveLength(0)
+  })
+
   it('fails closed when the file cannot be read', async () => {
     const { handle, written } = fakeHandle({ lastModified: 100, readable: false })
     const res = await saveVaultFile(bytes, { handle, suggestedName: 'v.kdbx', expectedLastModified: 100 })

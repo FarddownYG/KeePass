@@ -114,18 +114,17 @@ export async function saveVaultFile(
     handle: FileSystemFileHandle | null
     suggestedName: string
     forcePicker?: boolean
-    /** lastModified observed when the vault was read; null/undefined = unknown (no check). */
-    expectedLastModified?: number | null
+    /** lastModified observed when the vault was read/last written. Unknown (null) with a handle = conflict (fail closed). */
+    expectedLastModified: number | null
   },
 ): Promise<SaveResult> {
   if (opts.handle && !opts.forcePicker) {
     const expected = opts.expectedLastModified
     // Permission first, so the file can be read for the conflict check.
-    if (expected != null && (await ensureWritePermission(opts.handle))) {
-      const current = await lastModifiedOf(opts.handle)
-      // Fail closed: unreadable or changed file → never overwrite.
-      if (current === null || current !== expected) return { method: 'conflict' }
-    }
+    if (!(await ensureWritePermission(opts.handle))) return { method: 'cancelled' }
+    const current = await lastModifiedOf(opts.handle)
+    // Fail closed: unknown baseline, unreadable or changed file → never overwrite.
+    if (expected === null || current === null || current !== expected) return { method: 'conflict' }
     if (await writeHandle(opts.handle, bytes)) {
       return { method: 'handle', handle: opts.handle, lastModified: await lastModifiedOf(opts.handle) }
     }
